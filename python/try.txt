@@ -225,7 +225,8 @@ def draw_and_publish(request, stream="main"):
                 "box":     list(det.box),
                 "history": list(position_history.get(det.id, []))
             })
-        meta = {"frame_id": fid, **objs}
+        now = time.strftime("%FT%T", time.localtime())
+        meta = {"frame_id": fid, "timestamp": now, **objs}
         write_metadata(f"{META_SHM_BASE}_{slot}", meta)
 
         # 5) best-shot → SHM per-ID
