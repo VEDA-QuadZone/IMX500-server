@@ -12,8 +12,8 @@
 #include <thread>
 
 // SHM 설정 (Python 쪽과 반드시 일치시킬 것)
-static constexpr int WIDTH         = 640;
-static constexpr int HEIGHT        = 480;
+static constexpr int WIDTH         = 1280;
+static constexpr int HEIGHT        = 720;
 static constexpr int CHANNELS_BGRA = 4;
 static constexpr int FRAME_SIZE    = WIDTH * HEIGHT * CHANNELS_BGRA;
 
@@ -58,7 +58,7 @@ static void on_need_data(GstElement *appsrc, guint unused_size, gpointer user_da
     GstBuffer *buffer = gst_buffer_new_allocate(nullptr, FRAME_SIZE, nullptr);
     GstMapInfo map_info;
     gst_buffer_map(buffer, &map_info, GST_MAP_WRITE);
-      std::memcpy(map_info.data, frame_ptr, FRAME_SIZE);
+    std::memcpy(map_info.data, frame_ptr, FRAME_SIZE);
     gst_buffer_unmap(buffer, &map_info);
 
     // 4) PTS, Duration 설정 (30 FPS 가정)
@@ -84,13 +84,14 @@ int main(int argc, char *argv[]) {
     GstRTSPMountPoints *mounts  = gst_rtsp_server_get_mount_points(server);
     GstRTSPMediaFactory *factory = gst_rtsp_media_factory_new();
 
-    // 3) Launch 파이프라인: appsrc → videoconvert → x264enc → rtph264pay
+    // 3) Launch 파이프라인: appsrc → videoconvert → 420 format → x264enc → rtph264pay
     const char *launch_desc =
         "( "
         " appsrc name=mysrc is-live=true block=true format=TIME stream-type=stream "
-        " caps=video/x-raw,format=BGRA,width=640,height=480,framerate=30/1 "
+        " caps=video/x-raw,format=BGRA,width=1280,height=720,framerate=30/1 "
         " ! videoconvert "
-        " ! x264enc tune=zerolatency speed-preset=superfast bitrate=500 "
+        " ! video/x-raw,format=I420 " // BGRA를 YUV420P(I420)으로 명시적 변환
+        " ! x264enc tune=zerolatency speed-preset=superfast bitrate=3000 "
         " ! rtph264pay name=pay0 pt=96 "
         ")";
     gst_rtsp_media_factory_set_launch(factory, launch_desc);
@@ -121,3 +122,4 @@ int main(int argc, char *argv[]) {
 
     return 0;
 }
+//g++ -Wall -std=c++11 rtsp_server.cpp -o rtsp_server $(pkg-config --cflags --libs gstreamer-1.0 gstreamer-rtsp-server-1.0 gstreamer-app-1.0)

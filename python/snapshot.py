@@ -27,12 +27,12 @@ for fname in os.listdir(in_dir):
 
     # 🎯 fallback: try 640x480
     if img is None:
-        fallback_w, fallback_h = 640, 480
+        fallback_w, fallback_h = 1280, 720
         fallback_size = fallback_w * fallback_h * 4
         if len(data) == fallback_size:
             try:
                 img = np.frombuffer(data, dtype=np.uint8).reshape((fallback_h, fallback_w, 4))
-                print(f"[!] {fname} → fallback 적용됨 (640x480)")
+                print(f"[!] {fname} → fallback 적용됨 (1280x720)")
             except:
                 pass
 

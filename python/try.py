@@ -7,7 +7,6 @@ from functools import lru_cache
 from multiprocessing import shared_memory, resource_tracker
 from collections import defaultdict, deque
 import time
-#박유나ㅎㅇ마로며ㅑ
 import cv2
 import numpy as np
 from picamera2 import Picamera2, MappedArray
@@ -269,9 +268,12 @@ def draw_and_publish(request, stream="main"):
                         except Exception as e:
                             print(f"삭제 실패: {fname}, 이유: {e}")
 
-                # ✅ 새 snapshot 저장 및 기록
+            
+                # ✅ 새 snapshot 저장 및 기록 (타임스탬프 추가)
+                ts = time.strftime("%Y%m%d%H%M%S", time.localtime())
+                fname = f"{SNAP_SHM_BASE}_{det.id}_{ts}_{w}x{h}"
                 best_shots[det.id] = (det.conf, snap_bgr.copy())
-                write_snapshot(f"{SNAP_SHM_BASE}_{det.id}_{w}x{h}", snap_bgr)
+                write_snapshot(fname, snap_bgr)
         # 6) 화면 오버레이
         for det in dets:
             x, y, w, h = det.box
@@ -312,6 +314,7 @@ def main():
 
     picam2 = Picamera2(imx500.camera_num)
     cfg = picam2.create_preview_configuration(
+        main={"size": (1280, 720)},
         controls={"FrameRate": intrinsics.inference_rate}
     )
     picam2.start(cfg, show_preview=True)
@@ -323,5 +326,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 

@@ -1,20 +1,31 @@
-# Makefile
+# Makefile (upload_person_detection 전용)
 
-CXX        := g++
-PKG_CONFIG := pkg-config
+CXX      := g++
+CXXFLAGS := -std=c++17 -Iinclude -Wall -g \
+            $(shell pkg-config --cflags opencv4)
+LDFLAGS  := -pthread -lcurl \
+            $(shell pkg-config --libs   opencv4)
 
-GST_CFLAGS := $(shell $(PKG_CONFIG) --cflags gstreamer-1.0 gstreamer-rtsp-server-1.0)
-GST_LIBS   := $(shell $(PKG_CONFIG) --libs   gstreamer-1.0 gstreamer-rtsp-server-1.0)
-GST_LIBS   += -lgstapp-1.0      # ← 여기 추가!
+# 오브젝트 및 실행파일 정의
+PERSON_OBJ  := build/person_detector.o
+UPLOAD_EXE  := build/upload_person_detection
+UPLOAD_SRC  := src/upload/upload_person_detection.cpp
 
-CXXFLAGS   := -std=c++17 -Wall -O2
+all: $(UPLOAD_EXE)
 
-.PHONY: all clean
+# person_detector.cpp → .o
+build/person_detector.o: src/detect/person_detector.cpp
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-all: rtsp_server
-
-rtsp_server: rtsp_server.cpp
-	$(CXX) $(CXXFLAGS) $(GST_CFLAGS) rtsp_server.cpp -o rtsp_server $(GST_LIBS)
+# upload_person_detection 링크
+$(UPLOAD_EXE): $(PERSON_OBJ)
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) \
+	  $(UPLOAD_SRC) $(PERSON_OBJ) \
+	  -o $@ $(LDFLAGS)
 
 clean:
-	rm -f rtsp_server
+	rm -rf build
+
+.PHONY: all clean
