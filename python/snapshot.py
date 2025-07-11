@@ -1,17 +1,20 @@
 import os, numpy as np, cv2, re
 
-in_dir = '/dev/shm'
+in_dir  = '/dev/shm'
 out_dir = os.path.expanduser('~/snapshot_png')
 os.makedirs(out_dir, exist_ok=True)
 
-pattern = re.compile(r'shm_snapshot_(\d+)_(\d+)x(\d+)')
+# id, timestamp, width, height 네 그룹을 모두 잡도록 수정
+pattern = re.compile(r'shm_snapshot_(\d+)_(\d+)_(\d+)x(\d+)')
 
 for fname in os.listdir(in_dir):
-    match = pattern.match(fname)
-    if not match:
+    m = pattern.match(fname)
+    if not m:
+        # 매치 안 된 파일 이름 확인용 디버그
+        # print("skip:", fname)
         continue
 
-    id_str, w_str, h_str = match.groups()
+    id_str, ts_str, w_str, h_str = m.groups()
     w, h = int(w_str), int(h_str)
     expected_size = w * h * 4  # BGRA
 
@@ -25,13 +28,12 @@ for fname in os.listdir(in_dir):
         except:
             pass
 
-    # 🎯 fallback: try 640x480
+    # 🎯 fallback: 해상도 다를 때 예시(필요 없으면 지우셔도 됩니다)
     if img is None:
-        fallback_w, fallback_h = 1280, 720
-        fallback_size = fallback_w * fallback_h * 4
-        if len(data) == fallback_size:
+        fb_w, fb_h = 1280, 720
+        if len(data) == fb_w * fb_h * 4:
             try:
-                img = np.frombuffer(data, dtype=np.uint8).reshape((fallback_h, fallback_w, 4))
+                img = np.frombuffer(data, dtype=np.uint8).reshape((fb_h, fb_w, 4))
                 print(f"[!] {fname} → fallback 적용됨 (1280x720)")
             except:
                 pass
@@ -42,6 +44,8 @@ for fname in os.listdir(in_dir):
 
     try:
         img_bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-        cv2.imwrite(os.path.join(out_dir, fname + '.png'), img_bgr)
+        out_path = os.path.join(out_dir, fname + '.png')
+        cv2.imwrite(out_path, img_bgr)
+        # print(f"saved: {out_path}")
     except Exception as e:
         print(f"[!] 이미지 저장 실패: {fname}, 오류: {e}")

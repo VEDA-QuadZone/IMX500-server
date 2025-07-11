@@ -48,37 +48,24 @@ static double avg_center_movement(const json& history) {
 bool detect_illegal_parking(const json&) {
     auto path = find_latest_meta();
     if (path.empty()) return false;
-
     std::ifstream f(path);
     if (!f.is_open()) return false;
 
-    json meta;
+    json meta; 
     try { f >> meta; } catch (...) { return false; }
 
-    if (!meta.contains("frame_id")) return false;
-    int frame_id = meta["frame_id"];
-    if (frame_id == last_frame_id) return false;
-    last_frame_id = frame_id;
-
     for (auto& [key, arr] : meta.items()) {
+        // **car/truck** 만 검사
         if (key != "car" && key != "truck") continue;
 
         for (auto& obj : arr) {
-            if (!obj.contains("id") || !obj.contains("history")) continue;
-            int id = obj["id"];
-            if (reported_ids.count(id)) continue;
-
             const auto& hist = obj["history"];
             if (!hist.is_array() || hist.size() < HISTORY_MIN_LENGTH) continue;
-
             double move = avg_center_movement(hist);
             if (move < MOVEMENT_THRESHOLD) {
-                reported_ids.insert(id);
-                std::cout << "[INFO] 불법 주정차 감지됨! 차량 ID: " << id << std::endl;
                 return true;
             }
         }
     }
-
     return false;
 }
