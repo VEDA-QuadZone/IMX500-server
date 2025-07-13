@@ -105,14 +105,91 @@ static std::string save_image(const cv::Mat& img,
     return path;
 }
 
-// 5) TCP로 ADD_HISTORY 전송
+
+static bool send_upload_image(const std::string& img_path) {
+    // 1) open file & get its size
+    std::error_code ec;
+    size_t size = fs::file_size(img_path, ec);
+    if (ec) {
+        std::cerr << "[ERROR] file_size error: " << ec.message() << "\n";
+        return false;
+    }
+
+    // 2) connect
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) { perror("socket"); return false; }
+    sockaddr_in serv{AF_INET, htons(TCP_SERVER_PORT), {0}};
+    if (inet_pton(AF_INET, TCP_SERVER_IP.c_str(), &serv.sin_addr) <= 0 ||
+        connect(sock, (sockaddr*)&serv, sizeof(serv)) < 0) {
+        perror("connect"); close(sock); return false;
+    }
+
+    // 3) send header
+    std::string filename = fs::path(img_path).filename().string();
+    std::string header   = "UPLOAD " + filename + " " + std::to_string(size) + "\n";
+    if (send(sock, header.data(), header.size(), 0) < 0) {
+        perror("send header"); close(sock); return false;
+    }
+
+    // 4) send body
+    std::ifstream in(img_path, std::ios::binary);
+    if (!in.is_open()) {
+        std::cerr << "[ERROR] cannot open " << img_path << "\n";
+        close(sock);
+        return false;
+    }
+    const size_t BUF_SZ = 4096;
+    std::vector<char> buf(BUF_SZ);
+    size_t total = 0;
+    while (in.good() && total < size) {
+        in.read(buf.data(), std::min(BUF_SZ, size - total));
+        std::streamsize r = in.gcount();
+        if (r <= 0) break;
+        ssize_t s = send(sock, buf.data(), r, 0);
+        if (s < 0) { perror("send data"); in.close(); close(sock); return false; }
+        total += s;
+    }
+    in.close();
+    std::cout << "[DEBUG] Declared size=" << size
+              << ", actually sent=" << total << std::endl;
+
+    // 5) ⚠️ tell server “no more body” so it can finish reading
+    if (shutdown(sock, SHUT_WR) < 0) {
+        perror("shutdown UPLOAD SHUT_WR");
+    }
+
+    // 6) read entire JSON response (until we see the closing '}')
+    std::string resp;
+    char rbuf[512];
+    while (true) {
+        ssize_t n = recv(sock, rbuf, sizeof(rbuf), 0);
+        if (n <= 0) break;
+        resp.append(rbuf, n);
+        if (resp.find('}') != std::string::npos) break;
+    }
+
+    if (resp.empty()) {
+        std::cerr << "[ERROR] no response from server\n";
+        close(sock);
+        return false;
+    }
+    std::cout << "[TCP] Server response to UPLOAD: " << resp << std::endl;
+
+    // 7) close & return
+    close(sock);
+    return true;
+}
+
+
+
+
 static bool send_add_history(const std::string& date,
                              const std::string& img_path,
                              const std::string& plate,
                              int event_type) {
+    // 1) 소켓 생성 & 서버 연결
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) { perror("socket"); return false; }
-
     sockaddr_in serv{};
     serv.sin_family = AF_INET;
     serv.sin_port   = htons(TCP_SERVER_PORT);
@@ -123,106 +200,52 @@ static bool send_add_history(const std::string& date,
         perror("connect"); close(sock); return false;
     }
 
+    // 2) ADD_HISTORY 명령 전송
     std::string cmd = "ADD_HISTORY "
                     + date + " "
                     + img_path + " "
                     + plate + " "
                     + std::to_string(event_type)
                     + "\n";
-     if (send(sock, cmd.c_str(), cmd.size(), 0) < 0) {
+    if (send(sock, cmd.c_str(), cmd.size(), 0) < 0) {
         perror("send"); close(sock); return false;
     }
-    //shutdown(sock, SHUT_WR);
-    // ————————— RESPONDING —————————
-    char resp_buf[1024];
-    int n = recv(sock, resp_buf, sizeof(resp_buf)-1, 0);
-    if (n < 0) {
-        perror("recv");
-    } else {
-        resp_buf[n] = '\0';
-        std::cout << "[TCP] Server response to ADD_HISTORY: " 
-                  << resp_buf << "\n";
+
+    // 3) 더 보낼 데이터 없음을 서버에 알림 (EOF)
+    if (shutdown(sock, SHUT_WR) < 0) {
+        perror("shutdown ADD_HISTORY SHUT_WR");
     }
 
+    // 4) 서버 응답 수신 (성공 혹은 reset 도 정상으로 처리)
+    char resp_buf[1024];
+    int n = recv(sock, resp_buf, sizeof(resp_buf) - 1, 0);
+    if (n > 0) {
+        resp_buf[n] = '\0';
+        std::cout << "[TCP] Server response to ADD_HISTORY: " 
+                  << resp_buf << std::endl;
+    } else if (n == 0) {
+        std::cout << "[TCP] Server closed connection after ADD_HISTORY" 
+                  << std::endl;
+    } else {
+        if (errno == ECONNRESET) {
+            std::cout << "[TCP] Connection reset by peer after ADD_HISTORY; assuming success"
+                      << std::endl;
+        } else {
+            perror("recv");
+        }
+    }
+
+    // 5) 소켓 닫기
     close(sock);
     std::cout << "[TCP] Sent ADD_HISTORY: " << cmd;
     return true;
 }
 
-// 6) TCP로 UPLOAD <filename> <filesize>\n + 바이너리
-static bool send_upload_image(const std::string& img_path) {
-    std::error_code ec;
-    auto size = fs::file_size(img_path, ec);
-    if (ec) {
-        std::cerr<<"[ERROR] file_size 오류: "<<ec.message()<<"\n";
-        return false;
-    }
 
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) { perror("socket"); return false; }
-
-    sockaddr_in serv{};
-    serv.sin_family = AF_INET;
-    serv.sin_port   = htons(TCP_SERVER_PORT);
-    if (inet_pton(AF_INET, TCP_SERVER_IP.c_str(), &serv.sin_addr) <= 0) {
-        perror("inet_pton"); close(sock); return false;
-    }
-    if (connect(sock, (sockaddr*)&serv, sizeof(serv)) < 0) {
-        perror("connect"); close(sock); return false;
-    }
-
-    std::string filename = fs::path(img_path).filename().string();  // → "person_598_…jpg"
-std::string header = "UPLOAD "
-                   + filename
-                   + " "
-                   + std::to_string(size)
-                   + "\n";
-    if (send(sock, header.c_str(), header.size(), 0) < 0) {
-        perror("send header"); close(sock); return false;
-    }
-
-    std::ifstream in(img_path, std::ios::binary);
-    if (!in.is_open()) {
-        std::cerr<<"[ERROR] 이미지 파일 오픈 실패: "<<img_path<<"\n";
-        close(sock);
-        return false;
-    }
-    const size_t BUF_SZ = 4096;
-    std::vector<char> buf(BUF_SZ);
-    while (in.good()) {
-        in.read(buf.data(), BUF_SZ);
-        std::streamsize r = in.gcount();
-        if (r > 0) {
-            if (send(sock, buf.data(), r, 0) < 0) {
-                perror("send data");
-                in.close();
-                close(sock);
-                return false;
-            }
-        }
-    }
-    in.close();
-        // … after your loop that sends `buf` …
-
-    // ————————— RESPONDING —————————
-    char resp_buf[1024];
-    int n = recv(sock, resp_buf, sizeof(resp_buf)-1, 0);
-    if (n < 0) {
-        perror("recv");
-    } else {
-        resp_buf[n] = '\0';
-        std::cout << "[TCP] Server response to UPLOAD: " 
-                  << resp_buf << "\n";
-    }
-
-    close(sock);
-    std::cout<<"[TCP] UPLOAD request sent: "<<header<<"\n";
-    return true;
-
-}
 
 int main() {
     std::set<int> prev_ids, reported;
+
     while (true) {
         auto ids = detect_persons();
         std::set<int> current(ids.begin(), ids.end());
@@ -246,13 +269,29 @@ int main() {
                 continue;
 
             // 3) ADD_HISTORY
-            if (send_add_history(ts, path, "-", 2)) {
-                reported.insert(id);
+            if (!ts.empty()) {
+                // ts = "YYYYMMDD_HHMMSS" → "YYYY-MM-DD HH:MM:SS"
+                std::string date = ts.substr(0,4) + "-"   // YYYY-
+                                 + ts.substr(4,2) + "-"   // MM-
+                                 + ts.substr(6,2) + " "   // DD_
+                                 + ts.substr(9,2) + ":"   // HH:
+                                 + ts.substr(11,2) + ":"  // MM:
+                                 + ts.substr(13,2);       // SS
+                if (send_add_history(date, path, "-", 2)) {
+                    reported.insert(id);
+                }
             }
         }
 
+        // 반복 준비: 이번 current를 다음 prev_ids로
         prev_ids = std::move(current);
+
+        // 디버깅: 루프 한 사이클 지났음을 찍어보면 좋습니다.
+        std::cout << "[DEBUG] Loop tick, prev_ids size=" << prev_ids.size() << "\n";
+
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
+
     return 0;
 }
+

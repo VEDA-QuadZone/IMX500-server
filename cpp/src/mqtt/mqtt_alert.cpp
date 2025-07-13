@@ -1,10 +1,11 @@
 // src/mqtt/mqtt_alert.cpp
+
 #include <mosquitto.h>
 #include <iostream>
 #include <thread>
 #include "config.hpp"
 #include "mqtt_utils.hpp"
-#include "detector.hpp"
+#include "detector.hpp"    // detect_persons()
 
 int main(){
     mosquitto_lib_init();
@@ -18,19 +19,31 @@ int main(){
         std::cerr<<"Failed to connect broker\n"; return 1;
     }
 
-    // **네트워크 루프 백그라운드 스레드로 시작**
+    // 네트워크 루프 백그라운드 스레드로 시작
     mosquitto_loop_start(mosq);
 
+    // 연결 성공 이벤트 발행
     publish_event(mosq, CONNECTION_SUCCESS);
 
     while(true){
+        // 불법 주정차 검사
         if (detect_illegal_parking({})){
             publish_event(mosq, ILLEGAL_PARKING);
         }
+
+        // 사람 감지 검사
+        {
+            auto person_ids = detect_persons();
+            if (!person_ids.empty()) {
+                // 감지된 사람 ID가 하나라도 있으면 이벤트 발행
+                publish_event(mosq, PERSON_DETECTED);
+            }
+        }
+
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
-    // 종료 시 정리 (실제론 루프 벗어나지 않음)
+    // (실제론 여기엔 도달하지 않음)
     mosquitto_loop_stop(mosq, true);
     mosquitto_disconnect(mosq);
     mosquitto_destroy(mosq);

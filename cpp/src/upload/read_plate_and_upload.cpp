@@ -27,58 +27,55 @@ const float CONF_THRESH = 0.5f;
 const float NMS_THRESH = 0.45f;
 
 // ----------- SHM에서 최신 이미지 로드 ----------- //
-bool load_latest_shm_image(const std::string& shm_dir, cv::Mat& out_image, std::string& out_filename) {
-    std::regex pattern(R"(shm_snapshot_(\d+)_(\d+)_(\d+)x(\d+))");
+// 2) shm에서 최신 JPEG 스냅샷을 찾아서 디코딩
+bool load_latest_shm_image(const std::string& shm_dir,
+                           cv::Mat& out_image,
+                           std::string& out_filename) {
+    // 파일명 패턴: shm_snapshot_<slot>_<id>_<YYYYMMDD_HHMMSS>
+    std::regex pattern(R"(shm_snapshot_(\d+)_(\d+)_(\d{8}_\d{6}))");
 
     fs::path best_file;
     uint64_t best_ts = 0;
-    size_t best_size = 0;
-    int best_w = 0, best_h = 0;
 
-    for (const auto& entry : fs::directory_iterator(shm_dir)) {
-        const std::string fname = entry.path().filename().string();
-        std::smatch match;
+    for (auto& e : fs::directory_iterator(shm_dir)) {
+        std::string fn = e.path().filename().string();
+        std::smatch m;
+        if (!std::regex_match(fn, m, pattern)) 
+            continue;
 
-        if (!std::regex_match(fname, match, pattern)) continue;
+        // timestamp 부분(m[3])을 숫자로 변환
+        uint64_t ts = std::stoull(m[3].str());
+        if (ts <= best_ts) 
+            continue;
 
-        int w = std::stoi(match[3]);
-        int h = std::stoi(match[4]);
-        size_t expected_size = w * h * 4;
-
-        std::ifstream f(entry.path(), std::ios::binary | std::ios::ate);
-        size_t actual_size = f.tellg();
-        if (actual_size != expected_size) continue;
-
-        uint64_t ts = std::stoull(match[2]);
-        if (ts > best_ts) {
-            best_file = entry.path();
-            best_ts = ts;
-            best_size = actual_size;
-            best_w = w;
-            best_h = h;
-        }
+        best_ts   = ts;
+        best_file = e.path();
     }
 
     if (best_file.empty()) {
-        std::cerr << "[ERROR] No valid snapshot found (with correct size)\n";
+        std::cerr << "[ERROR] No valid snapshot found\n";
         return false;
     }
+
+    // 파일 이름과 이미지를 디코딩
     out_filename = best_file.filename().string();
+    std::ifstream in(best_file, std::ios::binary | std::ios::ate);
+    auto    sz  = in.tellg();
+    in.seekg(0);
+    std::vector<unsigned char> buf(sz);
+    in.read(reinterpret_cast<char*>(buf.data()), sz);
+    in.close();
 
-    std::vector<uint8_t> buffer(best_size);
-    std::ifstream f(best_file, std::ios::binary);
-    f.read(reinterpret_cast<char*>(buffer.data()), best_size);
-
-    try {
-        cv::Mat raw(best_h, best_w, CV_8UC4, buffer.data());
-        cv::cvtColor(raw, out_image, cv::COLOR_BGRA2BGR);
-        std::cout << "[INFO] Loaded: " << best_file.filename() << " (" << best_w << "x" << best_h << ")\n";
-        cv::imwrite("debug_valid_snapshot.png", out_image);
-        return true;
-    } catch (const std::exception& e) {
-        std::cerr << "[ERROR] cv::cvtColor failed: " << e.what() << "\n";
+    // JPEG → BGR 디코딩
+    out_image = cv::imdecode(buf, cv::IMREAD_COLOR);
+    if (out_image.empty()) {
+        std::cerr << "[ERROR] JPEG decode failed: " << out_filename << "\n";
         return false;
     }
+
+    std::cout << "[INFO] Loaded snapshot: " << out_filename
+              << " (size=" << sz << " bytes)\n";
+    return true;
 }
 
 

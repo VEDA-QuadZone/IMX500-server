@@ -13,5 +13,5 @@ enum EventCode {
     ILLEGAL_SPEEDING     = 1,
     PERSON_DETECTED      = 2
 };
-static const std::string TCP_SERVER_IP = "192.168.0.71";
+static const std::string TCP_SERVER_IP = "127.0.0.1";
 static const int         TCP_SERVER_PORT = 8080;
