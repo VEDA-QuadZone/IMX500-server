@@ -12,7 +12,8 @@ import numpy as np
 from picamera2 import Picamera2, MappedArray
 from picamera2.devices import IMX500
 from picamera2.devices.imx500 import NetworkIntrinsics, postprocess_nanodet_detection
-
+prev_time = time.time()
+fps = 0.0
 
 # snapshot ring-buffer
 MAX_SNAPSHOTS=400
@@ -329,7 +330,17 @@ def draw_and_publish(request, stream="main"):
 
     # 8) write latest frame‐slot index
     write_index(INDEX_SHM, slot)
+    
+    # —— 콘솔에 FPS 출력 ——  
+    global prev_time, fps
+    now = time.time()
+    dt = now - prev_time
+    if dt > 0:
+        fps = 1.0 / dt
+    prev_time = now
 
+    # '\r'로 같은 줄에 덮어쓰기, flush=True로 즉시 표시
+    print(f"\rFPS: {fps:.1f}", end="", flush=True)
 
 def get_args():
     p = argparse.ArgumentParser()

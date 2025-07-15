@@ -7,16 +7,16 @@
 #include <cmath>
 #include <iostream>
 #include <set>
+#include <vector>
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 
+// 최소 히스토리 길이와 움직임 임계값
 static constexpr int    HISTORY_MIN_LENGTH = 20;
 static constexpr double MOVEMENT_THRESHOLD = 5.0;
 
-static int last_frame_id = -1;
-static std::set<int> reported_ids;
-
+// /dev/shm 에서 가장 최근에 생성된 shm_meta_ 파일 경로를 찾음
 static std::string find_latest_meta() {
     std::string latest_path;
     fs::file_time_type latest_time;
@@ -32,40 +32,60 @@ static std::string find_latest_meta() {
     return latest_path;
 }
 
+// history 배열을 따라 중심 좌표 변화량의 평균을 계산
 static double avg_center_movement(const json& history) {
     double total = 0.0;
     for (size_t i = 1; i < history.size(); ++i) {
-        auto& p = history[i-1], &c = history[i];
+        auto& p = history[i-1];
+        auto& c = history[i];
         double cx1 = p[0].get<double>() + p[2].get<double>()/2;
         double cy1 = p[1].get<double>() + p[3].get<double>()/2;
         double cx2 = c[0].get<double>() + c[2].get<double>()/2;
         double cy2 = c[1].get<double>() + c[3].get<double>()/2;
-        total += std::hypot(cx2-cx1, cy2-cy1);
+        total += std::hypot(cx2 - cx1, cy2 - cy1);
     }
-    return total / (history.size()-1);
+    return total / (history.size() - 1);
 }
 
-bool detect_illegal_parking(const json&) {
+/// @brief  불법 주정차로 판단된 객체의 ID 목록을 반환
+/// @return 움직임이 임계값 이하인 car/truck 객체의 id 리스트 (없으면 빈 벡터)
+std::vector<int> detect_illegal_parking_ids() {
     auto path = find_latest_meta();
-    if (path.empty()) return false;
-    std::ifstream f(path);
-    if (!f.is_open()) return false;
+    if (path.empty()) {
+        // 메타 파일이 없으면 빈 리스트 반환
+        return {};
+    }
 
-    json meta; 
-    try { f >> meta; } catch (...) { return false; }
+    std::ifstream fin(path);
+    if (!fin.is_open()) {
+        return {};
+    }
 
-    for (auto& [key, arr] : meta.items()) {
-        // **car/truck** 만 검사
-        if (key != "car" && key != "truck") continue;
+    json meta;
+    try {
+        fin >> meta;
+    } catch (...) {
+        return {};
+    }
+
+    std::vector<int> ids;
+    // "car" 또는 "truck" 만 검사
+    for (auto& [label, arr] : meta.items()) {
+        if (label != "car" && label != "truck") 
+            continue;
 
         for (auto& obj : arr) {
             const auto& hist = obj["history"];
-            if (!hist.is_array() || hist.size() < HISTORY_MIN_LENGTH) continue;
+            if (!hist.is_array() || hist.size() < HISTORY_MIN_LENGTH)
+                continue;
+
             double move = avg_center_movement(hist);
             if (move < MOVEMENT_THRESHOLD) {
-                return true;
+                // json 안의 "id" 필드를 정수로 가져와 저장
+                ids.push_back(obj["id"].get<int>());
             }
         }
     }
-    return false;
+
+    return ids;
 }

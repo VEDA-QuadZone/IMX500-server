@@ -27,9 +27,12 @@ int main(){
 
     while(true){
         // 불법 주정차 검사
-        if (detect_illegal_parking({})){
-            publish_event(mosq, ILLEGAL_PARKING);
-        }
+        {
+    auto illegal_ids = detect_illegal_parking_ids();
+    if (!illegal_ids.empty()) {
+        publish_event(mosq, ILLEGAL_PARKING);
+    }
+}
 
         // 사람 감지 검사
         {

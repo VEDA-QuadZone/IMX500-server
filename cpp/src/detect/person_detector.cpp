@@ -3,7 +3,7 @@
 #include <iostream>
 #include <nlohmann/json.hpp>
 
-static constexpr char* META_SHM_BASE = "shm_meta";
+static constexpr const char* META_SHM_BASE = "shm_meta";
 
 // /dev/shm/shm_index를 4바이트 리틀엔디언 정수로 읽음
 static int read_shm_index() {
@@ -28,7 +28,7 @@ static std::string find_latest_meta() {
                       + "_" + std::to_string(slot);
 }
 
-std::vector<int> detect_persons() {
+std::vector<int> detect_persons(const nlohmann::json& /*meta*/) {
     auto path = find_latest_meta();
     if (path.empty()) {
         std::cerr << "[!] Empty meta path\n";

@@ -27,13 +27,23 @@ constexpr const char* ALERT_IMAGE         = "assets/images/slow_sig.png";
 constexpr const char* AUDIO_FILE          = "assets/audio/warning.wav";
 
 constexpr int POLLING_INTERVAL_MS         = 500;      // 폴링 주기 (ms)
-constexpr int DEBOUNCE_CYCLES             = 3;        // 연속 감지 프레임 수
+constexpr int DEBOUNCE_CYCLES             = 1;        // 연속 감지 프레임 수
 constexpr int ALERT_FLASH_COUNT           = 6;        // 플래시 횟수
 constexpr int FLASH_DELAY_US              = 250000;   // 플래시 딜레이 (us)
+constexpr int ALERT_COOLDOWN_SECONDS      = 20;       // 중복 알림 제한 시간
 
 // === 전역 변수 ===
 volatile bool running = true;
 int gpiochip = -1;
+
+// === 함수: 알림 트리거 조건 판단 (20초 쿨타임) ===
+bool should_trigger_alert(bool last_person, bool now_person,
+                          std::chrono::steady_clock::time_point now,
+                          std::chrono::steady_clock::time_point last_alert_time,
+                          int cooldown_seconds) {
+    return (!last_person && now_person &&
+            std::chrono::duration_cast<std::chrono::seconds>(now - last_alert_time).count() >= cooldown_seconds);
+}
 
 // SIGINT 핸들러: 안전한 종료 플래그 설정
 void handle_sigint(int) {
@@ -144,7 +154,7 @@ cv::Mat preprocess_image(const std::string& path) {
 
 void play_sound_async(const std::string& file_path) {
     std::thread([file_path]() {
-        std::string cmd = "aplay -D plughw:0,0 " + file_path + " > /dev/null 2>&1";
+        std::string cmd = "aplay -D plughw:2,0 " + file_path + " > /dev/null 2>&1";
         system(cmd.c_str());
     }).detach();
 }
@@ -210,6 +220,9 @@ int main() {
     int consecutive_detects = 0;
     bool last_person = false;
 
+    using clock = std::chrono::steady_clock;
+    clock::time_point last_alert_time = clock::now() - std::chrono::seconds(ALERT_COOLDOWN_SECONDS);  // 초기값
+
     // 4) 폴링 루프
     while (running) {
         auto ids = detect_persons();
@@ -223,7 +236,10 @@ int main() {
 
         // OFF → ON 전환 시 알림 트리거
         if (!last_person && now_person) {
+            auto now = clock::now();
+            std::cout << "[ALERT] 사람 감지됨! 알림 트리거\n";
             trigger_pedestrian_alert(spi_fd, alert, image);
+            last_alert_time = now;  // 알림 발생 시각 업데이트
         }
         last_person = now_person;
 

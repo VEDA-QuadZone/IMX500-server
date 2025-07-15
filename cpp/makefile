@@ -79,7 +79,7 @@ $(UPLOAD_EXE): $(PERSON_OBJ) | build
 	  $(UPLOAD_SRC) $(PERSON_OBJ) \
 	  -o $@ $(LDFLAGS)
 
-# upload_illegal_parking (parking_detector.o + license_detector.o 링크)
+#upload_illegal_parking (parking_detector.o + license_detector.o 링크)
 $(UPLOAD_ILLEGAL_EXE): $(PARKING_OBJ) $(LICENSE_OBJ) | build
 	$(CXX) $(CXXFLAGS) \
 	  $(UPLOAD_ILLEGAL_SRC) $(PARKING_OBJ) $(LICENSE_OBJ) \
