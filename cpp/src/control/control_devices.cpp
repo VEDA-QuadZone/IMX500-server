@@ -14,6 +14,7 @@
 #include <thread>
 #include <chrono>
 #include <signal.h>
+#include <atomic>
 
 // === 구성 분리 & 상수화 ===
 constexpr const char* SPI_DEV             = "/dev/spidev0.0";
@@ -35,6 +36,7 @@ constexpr int ALERT_COOLDOWN_SECONDS      = 20;       // 중복 알림 제한 �
 // === 전역 변수 ===
 volatile bool running = true;
 int gpiochip = -1;
+std::atomic<bool> alert_in_progress = false;
 
 // === 함수: 알림 트리거 조건 판단 (20초 쿨타임) ===
 bool should_trigger_alert(bool last_person, bool now_person,
@@ -154,7 +156,7 @@ cv::Mat preprocess_image(const std::string& path) {
 
 void play_sound_async(const std::string& file_path) {
     std::thread([file_path]() {
-        std::string cmd = "aplay -D plughw:2,0 " + file_path + " > /dev/null 2>&1";
+        std::string cmd = "aplay -D plughw:1,0 " + file_path + " > /dev/null 2>&1";
         system(cmd.c_str());
     }).detach();
 }
@@ -235,13 +237,19 @@ int main() {
         bool now_person = (consecutive_detects >= DEBOUNCE_CYCLES);
 
         // OFF → ON 전환 시 알림 트리거
-        if (!last_person && now_person) {
+        if (!last_person && now_person && !alert_in_progress.load()) {
+            alert_in_progress = true;  // 알림 중 상태 설정
+
             auto now = clock::now();
             std::cout << "[ALERT] 사람 감지됨! 알림 트리거\n";
-            trigger_pedestrian_alert(spi_fd, alert, image);
-            last_alert_time = now;  // 알림 발생 시각 업데이트
+
+            std::thread([=]() {
+                trigger_pedestrian_alert(spi_fd, alert, image);
+                alert_in_progress = false;  // 알림 종료 후 상태 초기화
+            }).detach();
+
+            last_alert_time = now;
         }
-        last_person = now_person;
 
         std::this_thread::sleep_for(std::chrono::milliseconds(POLLING_INTERVAL_MS));
     }

@@ -1,0 +1,5 @@
+# build/images 안의 모든 파일 무시
+build/images/*
+
+# 예외적으로 .gitkeep은 추적 (선택)
+!build/images/.gitkeep

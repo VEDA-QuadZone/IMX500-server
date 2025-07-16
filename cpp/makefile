@@ -27,6 +27,7 @@ LDFLAGS       := -pthread -lcurl \
 PERSON_OBJ           := build/person_detector.o
 PARKING_OBJ          := build/parking_detector.o
 LICENSE_OBJ          := build/license_detector.o
+SPEED_OBJ            := build/speed_detector_mod.o
 
 UPLOAD_SRC           := src/upload/upload_person_detection.cpp
 UPLOAD_EXE           := build/upload_person_detection
@@ -36,6 +37,7 @@ UPLOAD_ILLEGAL_EXE   := build/upload_illegal_parking
 
 MQTT_ALERT_SRC       := src/mqtt/mqtt_alert.cpp
 MQTT_ALERT_EXE       := build/mqtt_alert
+
 
 CONTROL_SRC          := src/control/control_devices.cpp
 CONTROL_OBJS         := $(PERSON_OBJ)
@@ -70,6 +72,9 @@ $(PARKING_OBJ): src/detect/parking_detector.cpp | build
 $(LICENSE_OBJ): src/detect/license_detector.cpp | build
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+$(SPEED_OBJ): src/detect/speed_detector_mod.cpp | build
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
 # ─────────────────────────────────────────────────
 # 링크 규칙
 # ─────────────────────────────────────────────────
@@ -85,9 +90,9 @@ $(UPLOAD_ILLEGAL_EXE): $(PARKING_OBJ) $(LICENSE_OBJ) | build
 	  $(UPLOAD_ILLEGAL_SRC) $(PARKING_OBJ) $(LICENSE_OBJ) \
 	  -o $@ $(LDFLAGS)
 
-$(MQTT_ALERT_EXE): $(PARKING_OBJ) $(PERSON_OBJ) | build
+$(MQTT_ALERT_EXE): $(PARKING_OBJ) $(PERSON_OBJ) $(SPEED_OBJ) | build
 	$(CXX) $(CXXFLAGS) \
-	  $(MQTT_ALERT_SRC) $(PARKING_OBJ) $(PERSON_OBJ) \
+	  $(MQTT_ALERT_SRC) $(PARKING_OBJ) $(PERSON_OBJ) $(SPEED_OBJ) \
 	  -o $@ $(LDFLAGS)
 
 $(CONTROL_EXE): $(CONTROL_SRC) $(CONTROL_OBJS) | build

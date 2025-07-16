@@ -273,7 +273,7 @@ int main() {
                 // ts = "YYYYMMDD_HHMMSS" → "YYYY-MM-DD HH:MM:SS"
                 std::string date = ts.substr(0,4) + "-"   // YYYY-
                                  + ts.substr(4,2) + "-"   // MM-
-                                 + ts.substr(6,2) + " "   // DD_
+                                 + ts.substr(6,2) + "_"   // DD_
                                  + ts.substr(9,2) + ":"   // HH:
                                  + ts.substr(11,2) + ":"  // MM:
                                  + ts.substr(13,2);       // SS

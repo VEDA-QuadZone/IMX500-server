@@ -233,9 +233,11 @@ def draw_and_publish(request, stream="main"):
         # 4) update position history
         for det in dets:
             if det.id is not None:
-                position_history[det.id].append(list(det.box))
+                timestamp_sec = time.time()
+                position_history[det.id].append(list(det.box) + [timestamp_sec])
 
         # 5) build and write metadata
+        '''
         objs = defaultdict(list)
         for det in dets:
             lbl = get_labels()[det.category]
@@ -248,7 +250,40 @@ def draw_and_publish(request, stream="main"):
         now = time.strftime("%FT%T", time.localtime())
         meta = {"frame_id": fid, "timestamp": now, **objs}
         write_metadata(f"{META_SHM_BASE}_{slot}", meta)
+        '''
 
+        # 5) build and write metadata WITH active flag
+        objs = defaultdict(list)
+        # 현재 프레임에 실제로 탐지된 ID 집합
+        current_ids = {det.id for det in dets if det.id is not None}
+        # dets 리스트를 id→Detection 맵으로
+        det_map = {det.id: det for det in dets if det.id is not None}
+        # tracker.objects 에 남아 있는 모든 id에 대해
+        for oid, last_box in tracker.objects.items():
+            # 탐지 정보가 있다면 해당 conf/box, 없다면 마지막 known box + conf=0
+            if oid in det_map:
+                det = det_map[oid]
+                conf = det.conf
+                box  = det.box
+            else:
+                conf = 0.0
+                #box  = last_box
+                box = tuple(float(v) for v in last_box)
+            history = list(position_history.get(oid, []))
+            active  = 1 if oid in current_ids else 0
+
+            lbl = get_labels()[det_map[oid].category] if oid in det_map else "unknown"
+            objs[lbl].append({
+                "id":      oid,
+                "conf":    conf,
+                "box":     list(box),
+                "history": history,
+                "active":  active
+            })
+
+        now = time.strftime("%FT%T", time.localtime())
+        meta = {"frame_id": fid, "timestamp": now, **objs}
+        write_metadata(f"{META_SHM_BASE}_{slot}", meta)
         # 6) best‐shot → JPEG 압축 + SHM 200‐slot ring buffer
         for det in dets:
             if det.id is None:
@@ -365,7 +400,7 @@ def main():
     intrinsics.task = "object detection"
     intrinsics.update_with_defaults()
 
-    tracker = IoUTracker(max_disappeared=20, iou_threshold=args.iou)
+    tracker = IoUTracker(max_disappeared=50, iou_threshold=args.iou)
 
     picam2 = Picamera2(imx500.camera_num)
     cfg = picam2.create_preview_configuration(
