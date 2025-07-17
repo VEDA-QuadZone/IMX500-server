@@ -1,4 +1,4 @@
-// src/detect/parking_detector.cpp
+// src/detect/parking_detector.cpp (중복 ID 제거 반영)
 
 #include "detector.hpp"
 #include <filesystem>
@@ -8,21 +8,33 @@
 #include <iostream>
 #include <set>
 #include <vector>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 
-// 최소 히스토리 길이와 움직임 임계값
-static constexpr int    HISTORY_MIN_LENGTH = 20;
-static constexpr double MOVEMENT_THRESHOLD = 5.0;
+// 파라미터
+static constexpr double STOP_SECONDS_THRESHOLD     = 10.0;  // 정지 시간 기준 (초)
+static constexpr double PER_FRAME_MOVE_THRESHOLD   = 50.0;  // 프레임당 이동량 기준
+static constexpr int    MIN_HISTORY_LENGTH         = 1;     // 최소 history 길이
 
-// /dev/shm 에서 가장 최근에 생성된 shm_meta_ 파일 경로를 찾음
+// 차량별 상태 저장
+struct ParkingInfo {
+    double stopped_time = 0.0;
+    std::vector<double> prev_box;
+    double prev_time = 0.0;
+};
+static std::unordered_map<int, ParkingInfo> parking_map;
+
+// 최신 shm_meta 파일 경로 반환
 static std::string find_latest_meta() {
     std::string latest_path;
     fs::file_time_type latest_time;
-    for (auto& entry : fs::directory_iterator("/dev/shm")) {
-        auto name = entry.path().filename().string();
+    for (const auto& entry : fs::directory_iterator("/dev/shm")) {
+        const auto& name = entry.path().filename().string();
         if (name.rfind("shm_meta_", 0) != 0) continue;
+
         auto t = fs::last_write_time(entry);
         if (latest_path.empty() || t > latest_time) {
             latest_path = entry.path().string();
@@ -32,34 +44,23 @@ static std::string find_latest_meta() {
     return latest_path;
 }
 
-// history 배열을 따라 중심 좌표 변화량의 평균을 계산
-static double avg_center_movement(const json& history) {
-    double total = 0.0;
-    for (size_t i = 1; i < history.size(); ++i) {
-        auto& p = history[i-1];
-        auto& c = history[i];
-        double cx1 = p[0].get<double>() + p[2].get<double>()/2;
-        double cy1 = p[1].get<double>() + p[3].get<double>()/2;
-        double cx2 = c[0].get<double>() + c[2].get<double>()/2;
-        double cy2 = c[1].get<double>() + c[3].get<double>()/2;
-        total += std::hypot(cx2 - cx1, cy2 - cy1);
-    }
-    return total / (history.size() - 1);
+// 중심좌표 거리 계산
+static double center_distance(const std::vector<double>& a, const std::vector<double>& b) {
+    double cx1 = a[0] + a[2] / 2.0, cy1 = a[1] + a[3] / 2.0;
+    double cx2 = b[0] + b[2] / 2.0, cy2 = b[1] + b[3] / 2.0;
+    return std::hypot(cx2 - cx1, cy2 - cy1);
 }
 
 /// @brief  불법 주정차로 판단된 객체의 ID 목록을 반환
-/// @return 움직임이 임계값 이하인 car/truck 객체의 id 리스트 (없으면 빈 벡터)
+/// @return 일정 시간 이상 정지한 car/truck 객체의 id 리스트 (중복 제거됨)
 std::vector<int> detect_illegal_parking_ids() {
-    auto path = find_latest_meta();
-    if (path.empty()) {
-        // 메타 파일이 없으면 빈 리스트 반환
-        return {};
-    }
+    std::unordered_set<int> unique_ids;
+
+    std::string path = find_latest_meta();
+    if (path.empty()) return {};
 
     std::ifstream fin(path);
-    if (!fin.is_open()) {
-        return {};
-    }
+    if (!fin.is_open()) return {};
 
     json meta;
     try {
@@ -68,24 +69,44 @@ std::vector<int> detect_illegal_parking_ids() {
         return {};
     }
 
-    std::vector<int> ids;
-    // "car" 또는 "truck" 만 검사
     for (auto& [label, arr] : meta.items()) {
-        if (label != "car" && label != "truck") 
-            continue;
+        if (label != "car" && label != "truck") continue;
 
         for (auto& obj : arr) {
+            int id = obj["id"];
             const auto& hist = obj["history"];
-            if (!hist.is_array() || hist.size() < HISTORY_MIN_LENGTH)
-                continue;
+            if (!hist.is_array() || hist.size() < MIN_HISTORY_LENGTH) continue;
 
-            double move = avg_center_movement(hist);
-            if (move < MOVEMENT_THRESHOLD) {
-                // json 안의 "id" 필드를 정수로 가져와 저장
-                ids.push_back(obj["id"].get<int>());
+            const auto& last = hist.back();
+            if (last.size() < 5) continue;
+
+            std::vector<double> cur_box = {last[0], last[1], last[2], last[3]};
+            double cur_time = last[4];
+
+            auto& info = parking_map[id];
+            if (!info.prev_box.empty()) {
+                double dist = center_distance(info.prev_box, cur_box);
+                double dt = cur_time - info.prev_time;
+
+                if (dist < PER_FRAME_MOVE_THRESHOLD) {
+                    info.stopped_time += std::max(0.0, dt);
+                } else {
+                    info.stopped_time = 0.0;  // 움직임 있으면 초기화
+                }
+            }
+
+            info.prev_box = cur_box;
+            info.prev_time = cur_time;
+
+            std::cerr << "[DEBUG] ID=" << id
+                      << " label=" << label
+                      << " stopped=" << info.stopped_time << "s\n";
+
+            if (info.stopped_time >= STOP_SECONDS_THRESHOLD) {
+                unique_ids.insert(id);
             }
         }
     }
 
-    return ids;
+    return std::vector<int>(unique_ids.begin(), unique_ids.end());
 }

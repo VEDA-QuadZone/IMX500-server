@@ -17,6 +17,8 @@
 #include <sys/mman.h>   // for shm_open, mmap, etc.
 #include <sys/stat.h>   // for struct stat
 #include <fcntl.h>      // for O_RDONLY
+#include <unordered_set>
+
 // 소켓으로 문자열 메시지 전송
 static bool send_message(int sock, const std::string& msg) {
     return send(sock, msg.c_str(), msg.size(), 0) == (ssize_t)msg.size();
@@ -38,7 +40,7 @@ static bool upload_shm(int sock, const std::string& shm_name) {
 
     // UPLOAD 명령: 이름은 그대로 shm_name 으로
     std::ostringstream cmd;
-    cmd << "UPLOAD " << shm_name << " " << buf.size() << "\n";
+    cmd << "UPLOAD " << shm_name << ".jpg " << buf.size() << "\n";
     if (!send_message(sock, cmd.str())) return false;
 
     // 바이너리 전송
@@ -48,7 +50,6 @@ static bool upload_shm(int sock, const std::string& shm_name) {
 int main(){
     std::cerr << "[DEBUG] Starting upload_illegal_parking (polling mode)\n";
 
-    // 미리 소켓 연결
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) { perror("socket"); return 1; }
     sockaddr_in serv{};
@@ -62,37 +63,31 @@ int main(){
     }
     std::cerr << "[DEBUG] Connected to TCP server\n";
 
+    std::unordered_set<std::string> uploaded_snapshots;
+
     while (true) {
-        // 1) 불법주정차 ID 목록 조회
-        auto illegal_ids = detect_illegal_parking_ids();
-        if (!illegal_ids.empty()) {
-            std::cerr << "[DEBUG] Illegal parking IDs:";
-            for (int id : illegal_ids) std::cerr << " " << id;
-            std::cerr << "\n";
+        // 번호판 OCR → JSON 배열
+        auto lic_list = detect_license(nlohmann::json::object());
 
-            // 2) 번호판 OCR → JSON 배열
-            auto lic_list = detect_license(nlohmann::json::object());
-            std::cerr << "[DEBUG] detect_license returned " << lic_list.size()
-                      << " entries\n";
+        if (!lic_list.empty()) {
+            std::cerr << "[DEBUG] detect_license returned " << lic_list.size() << " entries\n";
 
-            // 3) 각 스냅샷별로 업로드 & ADD_HISTORY
             for (auto& lic : lic_list) {
                 auto snap  = lic["shm_name"].get<std::string>();
                 auto plate = lic["plate"].get<std::string>();
-                std::string fullpath = "/dev/shm/" + snap;
+                if (uploaded_snapshots.count(snap)) continue;
+                uploaded_snapshots.insert(snap);
 
-                            // SHM에서 바로 업로드
-            if (!upload_shm(sock, snap)) {
-                std::cerr << "[ERROR] upload_shm failed: " << snap << "\n";
-                continue;
-            }
+                if (!upload_shm(sock, snap)) {
+                    std::cerr << "[ERROR] upload_shm failed: " << snap << "\n";
+                    continue;
+                }
 
-                // ADD_HISTORY 전송
                 auto now = std::chrono::system_clock::now();
                 std::time_t t_c = std::chrono::system_clock::to_time_t(now);
                 std::tm tm{}; localtime_r(&t_c, &tm);
                 char buf_time[20];
-                std::strftime(buf_time, sizeof(buf_time), "%F %T", &tm);
+                std::strftime(buf_time, sizeof(buf_time), "%F_%T", &tm);
 
                 std::ostringstream ah;
                 ah << "ADD_HISTORY "
@@ -104,16 +99,13 @@ int main(){
                 send_message(sock, ah.str());
                 std::cerr << "[DEBUG] Sent ADD_HISTORY for " << snap << "\n";
             }
-        }
-        else {
+        } else {
             std::cerr << "[DEBUG] No illegal parking detected\n";
         }
 
-        // 1초 간격 폴링
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
-    // 언젠가 종료할 일 있으면 이쪽으로
     close(sock);
     return 0;
 }
