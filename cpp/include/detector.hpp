@@ -36,3 +36,4 @@ std::vector<int> detect_persons(const nlohmann::json& meta = nlohmann::json::obj
 //   } 와 같이 넘겨줄 수 있습니다.
 //   return: { "file":"<snapshot.jpg>", "plate":"<인식된 문자열>" }
 nlohmann::json detect_license(const nlohmann::json& cfg = nlohmann::json::object());
+nlohmann::json detect_license_by_id(int id, const nlohmann::json& cfg = nlohmann::json::object());

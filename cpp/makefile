@@ -21,19 +21,24 @@ LDFLAGS       := -pthread -lcurl \
 				-Wl,-rpath,/home/yuna/onnxruntime-linux-aarch64-1.16.3/lib \
 				-Wl,-rpath,/home/yuna/myproject/cpp/src/detect/assets/model \
                 $(shell pkg-config --libs opencv4 libmosquitto) \
-                -llgpio
+                -llgpio -lzmq
 
 # 오브젝트 및 실행파일 정의
 PERSON_OBJ           := build/person_detector.o
 PARKING_OBJ          := build/parking_detector.o
 LICENSE_OBJ          := build/license_detector.o
-SPEED_OBJ            := build/speed_detector_mod.o
+
+SPEED_DAEMON_SRC := src/detect/speed_detector_daemon.cpp
+SPEED_DAEMON_EXE := build/speed_detector_daemon
 
 UPLOAD_SRC           := src/upload/upload_person_detection.cpp
 UPLOAD_EXE           := build/upload_person_detection
 
 UPLOAD_ILLEGAL_SRC   := src/upload/upload_illegal_parking.cpp
 UPLOAD_ILLEGAL_EXE   := build/upload_illegal_parking
+
+UPLOAD_ILLEGAL_SPEED_SRC := src/upload/upload_illegal_speed.cpp
+UPLOAD_ILLEGAL_SPEED_EXE := build/upload_illegal_speed
 
 MQTT_ALERT_SRC       := src/mqtt/mqtt_alert.cpp
 MQTT_ALERT_EXE       := build/mqtt_alert
@@ -51,8 +56,10 @@ ASSETS_AUD_DIR       := build/assets/audio
 # ─────────────────────────────────────────────────
 all: $(UPLOAD_EXE) \
     $(UPLOAD_ILLEGAL_EXE) \
+	$(UPLOAD_ILLEGAL_SPEED_EXE) \
     $(MQTT_ALERT_EXE) \
     $(CONTROL_EXE) \
+	$(SPEED_DAEMON_EXE) \
     control_assets
 
 # build 디렉터리 보장
@@ -72,9 +79,6 @@ $(PARKING_OBJ): src/detect/parking_detector.cpp | build
 $(LICENSE_OBJ): src/detect/license_detector.cpp | build
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(SPEED_OBJ): src/detect/speed_detector_mod.cpp | build
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
 # ─────────────────────────────────────────────────
 # 링크 규칙
 # ─────────────────────────────────────────────────
@@ -90,9 +94,12 @@ $(UPLOAD_ILLEGAL_EXE): $(PARKING_OBJ) $(LICENSE_OBJ) | build
 	  $(UPLOAD_ILLEGAL_SRC) $(PARKING_OBJ) $(LICENSE_OBJ) \
 	  -o $@ $(LDFLAGS)
 
-$(MQTT_ALERT_EXE): $(PARKING_OBJ) $(PERSON_OBJ) $(SPEED_OBJ) | build
+$(UPLOAD_ILLEGAL_SPEED_EXE): $(UPLOAD_ILLEGAL_SPEED_SRC) $(LICENSE_OBJ) $(PARKING_OBJ) | build
+	$(CXX) $(CXXFLAGS) $(UPLOAD_ILLEGAL_SPEED_SRC) $(LICENSE_OBJ) $(PARKING_OBJ) -o $@ $(LDFLAGS)
+	
+$(MQTT_ALERT_EXE): $(PARKING_OBJ) $(PERSON_OBJ) | build
 	$(CXX) $(CXXFLAGS) \
-	  $(MQTT_ALERT_SRC) $(PARKING_OBJ) $(PERSON_OBJ) $(SPEED_OBJ) \
+	  $(MQTT_ALERT_SRC) $(PARKING_OBJ) $(PERSON_OBJ) \
 	  -o $@ $(LDFLAGS)
 
 $(CONTROL_EXE): $(CONTROL_SRC) $(CONTROL_OBJS) | build
@@ -100,6 +107,8 @@ $(CONTROL_EXE): $(CONTROL_SRC) $(CONTROL_OBJS) | build
 	  $(CONTROL_SRC) $(CONTROL_OBJS) \
 	  -o $@ $(LDFLAGS)
 
+$(SPEED_DAEMON_EXE): $(SPEED_DAEMON_SRC) | build
+	$(CXX) $(CXXFLAGS) $(SPEED_DAEMON_SRC) -o $@ $(LDFLAGS)
 # ─────────────────────────────────────────────────
 # assets 복사
 # ─────────────────────────────────────────────────

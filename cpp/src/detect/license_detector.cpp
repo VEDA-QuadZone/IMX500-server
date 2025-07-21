@@ -1,5 +1,4 @@
 // read_plate_and_upload.cpp (라이브러리화된 전체 코드 with 설정 상수, snapshot 파싱, main 제거)
-
 #include <opencv2/opencv.hpp>
 #include <onnxruntime_cxx_api.h>
 #include <tensorflow/lite/interpreter.h>
@@ -194,7 +193,7 @@ std::string run_tflite_ocr(const cv::Mat& plate_img, const std::string& tflite_m
     }
     return result;
 }
-
+/*
 json detect_license(const json& cfg) {
     std::string shm_dir    = cfg.value("shm_dir",    DEFAULT_SHM_DIR);
     std::string onnx_path  = cfg.value("onnx_path",  DEFAULT_ONNX_MODEL_PATH);
@@ -242,4 +241,48 @@ json detect_license(const json& cfg) {
     }
 
     return results;
+}
+*/
+nlohmann::json detect_license_by_id(int id, const nlohmann::json& cfg)  {
+    std::string shm_dir    = cfg.value("shm_dir",    DEFAULT_SHM_DIR);
+    std::string onnx_path  = cfg.value("onnx_path",  DEFAULT_ONNX_MODEL_PATH);
+    std::string tflite_mod = cfg.value("tflite_path",DEFAULT_TFLITE_MODEL);
+    std::string labels_fp  = cfg.value("label_path", DEFAULT_LABEL_PATH);
+
+    Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "license");
+    Ort::SessionOptions opts;
+    Ort::Session session(env, onnx_path.c_str(), opts);
+    Ort::AllocatorWithDefaultOptions alloc;
+    auto in_name_ptr  = session.GetInputNameAllocated(0, alloc);
+    auto out_name_ptr = session.GetOutputNameAllocated(0, alloc);
+    std::string in_name  = in_name_ptr.get();
+    std::string out_name = out_name_ptr.get();
+
+    for (auto& entry : std::filesystem::directory_iterator(shm_dir)) {
+        std::string name = entry.path().filename().string();
+        int slot, cur_id; std::string ts;
+        if (!parse_shm_snapshot(name, slot, cur_id, ts)) continue;
+        if (cur_id != id) continue; // 여기만 id로 필터
+
+        cv::Mat img;
+        if (!load_snapshot_from_shm(name, img)) continue;
+
+        int top_pad, left_pad; float scale;
+        std::vector<float> buf;
+        auto tensor = make_ort_tensor(img, buf, top_pad, left_pad, scale);
+        auto boxes = detect_boxes(session, tensor, in_name.c_str(), out_name.c_str(), img, top_pad, left_pad, scale);
+
+        std::string plate = "";
+        if (!boxes.empty()) {
+            cv::Mat plate_roi = img(boxes[0]);
+            plate = run_tflite_ocr(plate_roi, tflite_mod, labels_fp);
+        }
+        // 반환: 스냅샷 이름/번호판만
+        return {
+            {"shm_name", name},
+            {"plate", plate}
+        };
+    }
+    // 못 찾은 경우
+    return {};
 }

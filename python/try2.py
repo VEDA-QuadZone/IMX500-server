@@ -12,6 +12,8 @@ import numpy as np
 from picamera2 import Picamera2, MappedArray
 from picamera2.devices import IMX500
 from picamera2.devices.imx500 import NetworkIntrinsics, postprocess_nanodet_detection
+from scipy.optimize import linear_sum_assignment
+
 prev_time = time.time()
 fps = 0.0
 
@@ -49,14 +51,24 @@ def write_frame(name: str, frame: np.ndarray):
     buf[:] = frame
     shm.close()
 
-
+'''
 def write_metadata(name: str, metadata: dict, max_size: int = 8192):
     data = json.dumps(metadata).encode('utf-8')
     shm = create_or_attach(name, max_size)
     shm.buf[:len(data)] = data
     shm.buf[len(data)] = 0
     shm.close()
-
+'''
+def write_metadata(name: str, metadata: dict, max_size: int = 65536):
+    data = json.dumps(metadata).encode('utf-8')
+    shm = create_or_attach(name, max_size)
+    view = shm.buf.cast("B")
+    if len(data) >= max_size:
+        raise ValueError("Metadata too large for shm segment!")
+    view[:len(data)] = data
+    view[len(data)] = 0
+    del view  # <- 이거 필수!
+    shm.close()
 def write_snapshot(name: str, snap: np.ndarray):
     shm = create_or_attach(name, snap.nbytes)
     buf = np.ndarray(snap.shape, dtype=snap.dtype, buffer=shm.buf)
@@ -84,67 +96,145 @@ def unlink_snapshot(prefix: str):
             pass
 
 # ----------------------------------------
-# IoU Tracker
+# SORT Tracker (filterpy.KalmanFilter 사용)
 # ----------------------------------------
 def iou(boxA, boxB):
-    xA, yA = max(boxA[0], boxB[0]), max(boxA[1], boxB[1])
-    xB, yB = min(boxA[2], boxB[2]), min(boxA[3], boxB[3])
-    inter = max(0, xB - xA) * max(0, yB - yA)
-    a = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
-    b = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
-    return 0.0 if a == 0 or b == 0 else inter / float(a + b - inter)
+    xA = max(boxA[0], boxB[0])
+    yA = max(boxA[1], boxB[1])
+    xB = min(boxA[2], boxB[2])
+    yB = min(boxA[3], boxB[3])
+    interW = max(0, xB - xA)
+    interH = max(0, yB - yA)
+    interArea = interW * interH
+    areaA = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+    areaB = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+    denom = areaA + areaB - interArea
+    return interArea / denom if denom > 0 else 0.0
 
-class IoUTracker:
-    def __init__(self, max_disappeared=20, iou_threshold=0.3):
-        self.next_id = 0
-        self.objects = {}
-        self.disappeared = {}
-        self.max_disp = max_disappeared
-        self.iou_th = iou_threshold
+def iou_batch(bb_test, bb_gt):
+    bb_gt  = bb_gt[None]        # (1,M,4)
+    bb_test= bb_test[:,None]    # (N,1,4)
+    xx1 = np.maximum(bb_test[...,0], bb_gt[...,0])
+    yy1 = np.maximum(bb_test[...,1], bb_gt[...,1])
+    xx2 = np.minimum(bb_test[...,2], bb_gt[...,2])
+    yy2 = np.minimum(bb_test[...,3], bb_gt[...,3])
+    w = np.clip(xx2-xx1, 0, None)
+    h = np.clip(yy2-yy1, 0, None)
+    inter = w*h
+    areaA = (bb_test[...,2]-bb_test[...,0])*(bb_test[...,3]-bb_test[...,1])
+    areaB = (bb_gt[...,2]-bb_gt[...,0])*(bb_gt[...,3]-bb_gt[...,1])
+    return inter/(areaA+areaB-inter+1e-6)
 
-    def register(self, box):
-        self.objects[self.next_id] = box
-        self.disappeared[self.next_id] = 0
-        self.next_id += 1
+def convert_bbox_to_z(bbox):
+    x1,y1,x2,y2 = bbox
+    w, h = x2-x1, y2-y1
+    x = x1 + w/2.;  y = y1 + h/2.
+    s = w*h;        r = w/(h+1e-6)
+    return np.array([x,y,s,r], dtype=np.float32).reshape(4,1)
 
-    def deregister(self, oid):
-        del self.objects[oid]
-        del self.disappeared[oid]
+def convert_x_to_bbox(x, score=None):
+    w = np.sqrt(x[2]*x[3]);  h = x[2]/(w+1e-6)
+    x1 = x[0]-w/2.;  y1 = x[1]-h/2.
+    x2 = x[0]+w/2.;  y2 = x[1]+h/2.
+    if score is None:
+        return np.array([x1,y1,x2,y2], dtype=np.float32).reshape(1,4)
+    return np.array([x1,y1,x2,y2,score], dtype=np.float32).reshape(1,5)
 
-    def update(self, rects):
-        if not rects:
-            for oid in list(self.disappeared):
-                self.disappeared[oid] += 1
-                if self.disappeared[oid] > self.max_disp:
-                    self.deregister(oid)
-            return {}
-        if not self.objects:
-            for b in rects:
-                self.register(b)
+class SimpleKalmanFilter:
+    def __init__(self):
+        self.x = np.zeros((4,1), np.float32)
+        self.F = np.eye(4, dtype=np.float32)
+        self.P = np.eye(4, dtype=np.float32)*10.
+        self.Q = np.eye(4, dtype=np.float32)
+        self.R = np.eye(4, dtype=np.float32)*10.
+        self.H = np.eye(4, dtype=np.float32)
+
+    def initiate(self, z):
+        self.x = z.copy()
+
+    def predict(self):
+        self.x = self.F @ self.x
+        self.P = self.F @ self.P @ self.F.T + self.Q
+
+    def update(self, z):
+        y = z - self.H @ self.x
+        S = self.H @ self.P @ self.H.T + self.R
+        K = self.P @ self.H.T @ np.linalg.inv(S)
+        self.x += K @ y
+        self.P = (np.eye(4, dtype=np.float32) - K @ self.H) @ self.P
+
+class KalmanBoxTracker:
+    _count = 0
+    def __init__(self, bbox):
+        self.kf = SimpleKalmanFilter()
+        self.kf.initiate(convert_bbox_to_z(bbox))
+        self.id = KalmanBoxTracker._count;  KalmanBoxTracker._count += 1
+        self.time_since_update = 0
+        self.hit_streak = 0
+
+    def update(self, bbox):
+        self.time_since_update = 0
+        self.hit_streak += 1
+        self.kf.update(convert_bbox_to_z(bbox))
+
+    def predict(self):
+        self.kf.predict()
+        self.time_since_update += 1
+        return convert_x_to_bbox(self.kf.x)[0]
+
+    def get_state(self):
+        return convert_x_to_bbox(self.kf.x)[0]
+
+class Sort:
+    def __init__(self, max_age=20, min_hits=3, iou_threshold=0.3):
+        self.max_age = max_age
+        self.min_hits = min_hits
+        self.iou_threshold = iou_threshold
+        self.trackers = []
+        self.frame_count = 0
+
+    def update(self, dets=np.empty((0,5), np.float32)):
+        self.frame_count += 1
+        # 1) 예측
+        trks = []
+        to_del = []
+        for t, trk in enumerate(self.trackers):
+            pred = trk.predict()
+            trks.append([*pred, 0.])
+            if np.any(np.isnan(pred)):
+                to_del.append(t)
+        for t in reversed(to_del):
+            self.trackers.pop(t)
+        trks = np.array(trks, np.float32) if trks else np.empty((0,5),np.float32)
+
+        # 2) 매칭
+        if dets.shape[0] == 0:
+            matches, u_dets, u_trks = np.empty((0,2),int), list(), list(range(trks.shape[0]))
         else:
-            oids = list(self.objects)
-            obs  = list(self.objects.values())
-            D = np.zeros((len(obs), len(rects)), dtype=np.float32)
-            for i, ob in enumerate(obs):
-                for j, nb in enumerate(rects):
-                    D[i,j] = iou(ob, nb)
-            rows, cols = set(), set()
-            for _ in range(min(len(obs), len(rects))):
-                i, j = np.unravel_index(np.argmax(D), D.shape)
-                if D[i,j] < self.iou_th:
-                    break
-                oid = oids[i]
-                self.objects[oid] = rects[j]
-                self.disappeared[oid] = 0
-                D[i,:] = -1; D[:,j] = -1
-                rows.add(i); cols.add(j)
-            for i in set(range(len(obs))) - rows:
-                oid=oids[i]; self.disappeared[oid]+=1
-                if self.disappeared[oid] > self.max_disp:
-                    self.deregister(oid)
-            for j in set(range(len(rects))) - cols:
-                self.register(rects[j])
-        return self.objects.copy()
+            iou_mat = iou_batch(dets[:,:4], trks[:,:4])
+            m_idx = linear_sum_assignment(-iou_mat)
+            matches = np.array(list(zip(*m_idx))) if len(m_idx[0])>0 else np.empty((0,2),int)
+            u_dets = [d for d in range(dets.shape[0]) if d not in matches[:,0]]
+            u_trks = [t for t in range(trks.shape[0]) if t not in matches[:,1]]
+
+        # 3) 업데이트 & 생성
+        for m in matches:
+            self.trackers[m[1]].update(dets[m[0],:4])
+        for d in u_dets:
+            self.trackers.append(KalmanBoxTracker(dets[d,:4]))
+
+        # 4) 결과 수집 & 소멸
+        ret = []
+        for i in reversed(range(len(self.trackers))):
+            trk = self.trackers[i]
+            if trk.time_since_update < 1 and (trk.hit_streak >= self.min_hits or self.frame_count <= self.min_hits):
+                d = trk.get_state()
+                ret.append([*d, trk.id])
+            if trk.time_since_update > self.max_age:
+                self.trackers.pop(i)
+
+        return np.array(ret, np.float32) if ret else np.empty((0,5),np.float32)
+
 
 class Detection:
     def __init__(self, coords, cat, conf, md, tid=None):
@@ -153,6 +243,7 @@ class Detection:
         self.category = cat
         self.conf = conf
         self.id = tid
+
 
 # ----------------------------------------
 # Globals, Ring Buffer 설정
@@ -181,6 +272,7 @@ def parse_detections(metadata: dict):
     out = imx500.get_outputs(metadata, add_batch=True)
     if out is None:
         return []
+
     if intrinsics.postprocess == "nanodet":
         raw, scores, classes = postprocess_nanodet_detection(
             outputs=out[0], conf=th, iou_thres=iou_th, max_out_dets=maxd
@@ -196,23 +288,106 @@ def parse_detections(metadata: dict):
         boxes = list(zip(*np.array_split(b, 4, axis=1)))
         scores, classes = s, c
 
+    # 1. 필터링된 결과 추출 (box, score, class)
     filtered = [
         (boxes[i], float(scores[i]), int(classes[i]))
         for i in range(len(boxes))
         if scores[i] >= th and get_labels()[int(classes[i])] in {"person", "car", "truck"}
     ]
-    rects = [(b[0], b[1], b[2], b[3]) for b, _, _ in filtered]
-    tracked = tracker.update(rects)
 
+    # 2. dets_np 구성: [x1, y1, x2, y2, conf]
+    dets_np = []
+    for b, conf, _ in filtered:
+        if isinstance(b, (list, tuple, np.ndarray)) and len(b) == 4:
+            try:
+                x, y, w, h = map(float, b)
+                x1, y1 = x, y
+                x2, y2 = x + w, y + h
+                dets_np.append([x1, y1, x2, y2, conf])
+            except Exception as e:
+                print(f"[!] Invalid bbox: {b}, error: {e}")
+        else:
+            print(f"[!] Skipped malformed box: {b}")
+
+    # 3. numpy 변환 및 빈 배열 대응
+    if dets_np:
+        print("[DEBUG] dets_np shape check:", [len(e) for e in dets_np])
+        dets_np = np.array(dets_np, dtype=np.float32).reshape(-1, 5)
+    else:
+        print("[DEBUG] dets_np is empty")
+        dets_np = np.empty((0, 5), dtype=np.float32)
+
+    # 4. Kalman SORT 업데이트
+    tracks = tracker.update(dets_np)
+
+    # 5. 트래킹 결과 → Detection 객체 생성
     dets = []
-    for b, conf, cat in filtered:
-        tid = None
-        for oid, tb in tracked.items():
-            if iou(b, tb) > iou_th:
-                tid = oid
-                break
-        dets.append(Detection(b, cat, conf, metadata, tid))
+    for tr in tracks:
+        x1, y1, x2, y2, tid = tr.astype(int)
+        w, h = x2 - x1, y2 - y1
+        box = (x1, y1, w, h)
+
+        # 원본 검출에서 가장 높은 IoU로 conf/클래스 가져오기
+        best_idx, best_iou = -1, 0.0
+        for i, (b, conf, cat) in enumerate(filtered):
+            raw_box = [b[0], b[1], b[0] + b[2], b[1] + b[3]]
+            iou_score = iou(raw_box, (x1, y1, x2, y2))
+            if iou_score > best_iou:
+                best_iou = iou_score
+                best_idx = i
+
+        if best_idx >= 0:
+            conf = filtered[best_idx][1]
+            cat  = filtered[best_idx][2]
+        else:
+            conf, cat = 0.0, -1
+
+        dets.append(Detection(box, cat, conf, metadata, tid))
+
     return dets
+
+
+def read_overlay_config():
+    try:
+        try:
+            # 먼저 attach 시도
+            shm = shared_memory.SharedMemory(name="overlay_config")
+        except FileNotFoundError:
+            # 없으면 새로 생성
+            shm = shared_memory.SharedMemory(name="overlay_config", create=True, size=1024)
+            default = {"show_bbox": False, "show_timestamp": False}
+            encoded = json.dumps(default).encode('utf-8')
+            shm.buf[:len(encoded)] = encoded
+            shm.buf[len(encoded)] = 0
+            print("[INFO] overlay_config created with default false,false")
+
+        config_json = bytes(shm.buf[:]).split(b'\0', 1)[0].decode().strip()
+        shm.close()
+
+        if not config_json:
+            return False, False
+
+        config = json.loads(config_json)
+        return config.get("show_bbox", False), config.get("show_timestamp", False)
+
+    except Exception as e:
+        print(f"[!] read_overlay_config error: {e}")
+        return False, False
+
+def draw_bbox_only(img, dets):
+    for det in dets:
+        x, y, w, h = det.box
+        label = get_labels()[det.category]
+        cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        cv2.putText(img, label, (x, y - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    return img
+
+def draw_timestamp_only(img):
+    ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    cv2.putText(img, ts, (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+    return img
 
 def draw_and_publish(request, stream="main"):
     global frame_count, best_shots, snapshot_counter
@@ -228,7 +403,21 @@ def draw_and_publish(request, stream="main"):
     # 3) write raw frame into SHM ring buffer
     with MappedArray(request, stream) as m:
         raw = m.array.copy()
-        write_frame(f"{FRAME_SHM_BASE}_{slot}", raw)
+
+        img = raw.copy()
+
+        show_bbox, show_timestamp = read_overlay_config()
+
+        if show_bbox and show_timestamp:
+            img = draw_bbox_only(img, dets)
+            img = draw_timestamp_only(img)
+        elif show_bbox:
+            img = draw_bbox_only(img, dets)
+        elif show_timestamp:
+            img = draw_timestamp_only(img)
+
+        shm_name = f"{FRAME_SHM_BASE}_{slot}"
+        write_frame(shm_name, img)
 
         # 4) update position history
         for det in dets:
@@ -259,38 +448,44 @@ def draw_and_publish(request, stream="main"):
         # dets 리스트를 id→Detection 맵으로
         det_map = {det.id: det for det in dets if det.id is not None}
         # tracker.objects 에 남아 있는 모든 id에 대해
-        for oid, last_box in tracker.objects.items():
-            # 탐지 정보가 있다면 해당 conf/box, 없다면 마지막 known box + conf=0
+        for trk in tracker.trackers:
+            oid = trk.id
+            # KalmanBoxTracker.get_state()는 [x1,y1,x2,y2]
+            x1, y1, x2, y2 = map(int, trk.get_state())
+            box = (x1, y1, x2 - x1, y2 - y1)
+
             if oid in det_map:
-                det = det_map[oid]
+                det  = det_map[oid]
                 conf = det.conf
                 box  = det.box
             else:
                 conf = 0.0
-                #box  = last_box
-                box = tuple(float(v) for v in last_box)
+
             history = list(position_history.get(oid, []))
             active  = 1 if oid in current_ids else 0
+            lbl     = get_labels()[det_map[oid].category] if oid in det_map else "unknown"
 
-            lbl = get_labels()[det_map[oid].category] if oid in det_map else "unknown"
             objs[lbl].append({
                 "id":      oid,
                 "conf":    conf,
                 "box":     list(box),
                 "history": history,
                 "active":  active
+
             })
 
         now = time.strftime("%FT%T", time.localtime())
         meta = {"frame_id": fid, "timestamp": now, **objs}
         write_metadata(f"{META_SHM_BASE}_{slot}", meta)
         # 6) best‐shot → JPEG 압축 + SHM 200‐slot ring buffer
+
+        MIN_CONF_DIFF = 0.05  # 최소 confidence 차이
         for det in dets:
             if det.id is None:
                 continue
 
             prev_conf, _ = best_shots.get(det.id, (0.0, None))
-            if det.conf <= prev_conf:
+            if det.conf <= prev_conf + MIN_CONF_DIFF:
                 continue
 
             # crop or full frame
@@ -299,22 +494,28 @@ def draw_and_publish(request, stream="main"):
 
             # RGBA→BGRA if needed
             try:
-                if snap.ndim == 3:
-                    if snap.shape[2] == 4:
-                        snap_bgr = cv2.cvtColor(snap, cv2.COLOR_RGBA2BGRA)
-                    else:
-                        snap_bgr = snap
+                if snap.ndim == 3 and snap.shape[2] == 4:
+                    snap_bgr = cv2.cvtColor(snap, cv2.COLOR_RGBA2BGRA)
                 else:
-                    print(f"[!] unexpected snap shape: {snap.shape}")
-                    continue
+                    snap_bgr = snap
             except Exception as e:
                 print(f"[!] snapshot conversion error: {e}")
                 continue
+            # (1) 이전 snapshot 중 동일 ID 삭제
+            for fname in os.listdir("/dev/shm"):
+                if fname.startswith(SNAP_SHM_BASE) and f"_{det.id}_" in fname:
+                    try:
+                        old = shared_memory.SharedMemory(name=fname)
+                        old.unlink()
+                        old.close()
+                    except FileNotFoundError:
+                        pass
 
             # a) compute slot & timestamp
-            slot2     = snapshot_counter % MAX_SNAPSHOTS
+            slot2     = det.id % MAX_SNAPSHOTS
             base_name = f"{SNAP_SHM_BASE}_{slot2}"
             ts        = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+            shm_name  = f"{base_name}_{det.id}_{ts}"
 
             # b) remove any old segments in this slot
             for fname in os.listdir("/dev/shm"):
@@ -326,9 +527,6 @@ def draw_and_publish(request, stream="main"):
                     old.close()
                 except FileNotFoundError:
                     pass
-
-            # c) final SHM name: slot, det.id, timestamp
-            shm_name = f"{base_name}_{det.id}_{ts}"
 
             # d) JPEG encode
             success, jpeg_buf = cv2.imencode(
@@ -345,7 +543,7 @@ def draw_and_publish(request, stream="main"):
                 best_shots[det.id] = (det.conf, snap_bgr.copy())
 
                 # e) advance counter
-                snapshot_counter += 1
+                #snapshot_counter += 1
 
         # 7) overlay detections on preview
         for det in dets:
@@ -389,6 +587,11 @@ def get_args():
     p.add_argument("--postprocess",     choices=["","nanodet"], default=None)
     p.add_argument("-r","--preserve-aspect-ratio",
                 action=argparse.BooleanOptionalAction)
+    p.add_argument("--show-bbox", action="store_true",
+                   help="Overlay bounding boxes on the frame")
+    p.add_argument("--show-timestamp", action="store_true",
+                   help="Overlay timestamp on the frame")
+    
     return p.parse_args()
 
 def main():
@@ -400,7 +603,7 @@ def main():
     intrinsics.task = "object detection"
     intrinsics.update_with_defaults()
 
-    tracker = IoUTracker(max_disappeared=50, iou_threshold=args.iou)
+    tracker = Sort(max_age=50, min_hits=1, iou_threshold=args.iou)
 
     picam2 = Picamera2(imx500.camera_num)
     cfg = picam2.create_preview_configuration(
