@@ -23,8 +23,8 @@ constexpr int        DC_PIN               = 25;
 constexpr int        RST_PIN              = 22;
 constexpr int        BL_PIN               = 24;
 
-constexpr const char* DEFAULT_IMAGE       = "assets/images/kid-in-cross.png";
-constexpr const char* ALERT_IMAGE         = "assets/images/slow_sig.png";
+constexpr const char* DEFAULT_IMAGE       = "assets/images/normal_90.png";
+constexpr const char* ALERT_IMAGE         = "assets/images/kids_90.png";
 constexpr const char* AUDIO_FILE          = "assets/audio/warning.wav";
 
 constexpr int POLLING_INTERVAL_MS         = 500;      // 폴링 주기 (ms)
@@ -156,7 +156,7 @@ cv::Mat preprocess_image(const std::string& path) {
 
 void play_sound_async(const std::string& file_path) {
     std::thread([file_path]() {
-        std::string cmd = "aplay -D plughw:1,0 " + file_path + " > /dev/null 2>&1";
+        std::string cmd = "aplay -D plughw:2,0 " + file_path + " > /dev/null 2>&1";
         system(cmd.c_str());
     }).detach();
 }
