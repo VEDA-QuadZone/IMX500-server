@@ -477,7 +477,7 @@ def main():
 
     picam2 = Picamera2(imx500.camera_num)
     cfg = picam2.create_preview_configuration(
-        main={"size": (1280, 720)},
+        main={"size": (1920, 1080)},
         controls={"FrameRate": intrinsics.inference_rate}
     )
     picam2.start(cfg, show_preview=True)
