@@ -2,24 +2,24 @@
 
 CXX           := g++
 # ONNX Runtime include
-ORT_INC       := -I/home/yuna/onnxruntime-linux-aarch64-1.16.3/include
+ORT_INC       := -I/home/sejin/onnxruntime-linux-aarch64-1.16.3/include
 # TensorFlow Lite include
-TFLITE_INC    := -I/home/yuna/tensorflow
+TFLITE_INC    := -I/home/sejin/tensorflow
 
 CXXFLAGS      := -std=c++17 -Iinclude -Wall -g \
                 $(ORT_INC) $(TFLITE_INC) \
                 $(shell pkg-config --cflags opencv4 libmosquitto)
 
 # ONNX Runtime lib
-ORT_LIBS      := -L/home/yuna/onnxruntime-linux-aarch64-1.16.3/lib -lonnxruntime
+ORT_LIBS      := -L/home/sejin/onnxruntime-linux-aarch64-1.16.3/lib -lonnxruntime
 # TensorFlow Lite lib 위치와 이름 (libtensorflowlite.so)
-TFLITE_LIB_DIR := -L/home/yuna/myproject/cpp/src/detect/assets/model
+TFLITE_LIB_DIR := -L/home/sejin/myproject/cpp/src/detect/assets/model
 TFLITE_LIBS    := $(TFLITE_LIB_DIR) -ltensorflowlite
 
 LDFLAGS       := -pthread -lcurl \
                 $(ORT_LIBS) $(TFLITE_LIBS) \
-				-Wl,-rpath,/home/yuna/onnxruntime-linux-aarch64-1.16.3/lib \
-				-Wl,-rpath,/home/yuna/myproject/cpp/src/detect/assets/model \
+				-Wl,-rpath,/home/sejin/onnxruntime-linux-aarch64-1.16.3/lib \
+				-Wl,-rpath,/home/sejin/myproject/cpp/src/detect/assets/model \
                 $(shell pkg-config --libs opencv4 libmosquitto) \
                 -llgpio -lzmq
 
