@@ -3,9 +3,9 @@
 #include <thread>
 #include <zmq.hpp>
 #include <nlohmann/json.hpp>
-#include "config.hpp"
-#include "mqtt_utils.hpp"
-#include "detector.hpp"    // detect_persons()
+#include "../../include/config.hpp"
+#include "../../include/mqtt_utils.hpp"
+#include "../../include/detector.hpp"    // detect_persons()
 
 using json = nlohmann::json;
 
@@ -44,45 +44,31 @@ int main() {
     // 로그 콜백 등록 (선택)
     mosquitto_log_callback_set(mosq, log_callback);
 
-    // TLS 설정
-    int ret = mosquitto_tls_set(mosq,
-        "/home/yuna/myCA/certs/ca.cert.pem",
+    // TLS 설정 (mTLS: 서버 인증서 검증용 CA + 클라이언트 cert/key)
+    int ret = mosquitto_tls_set(
+        mosq,
+        "/home/yuna/myCA/certs/ca.cert.pem",                                  // CA 공개키
         nullptr,
-        "/home/yuna/myCA/mqtt_server/certs/mqtt_server.cert.pem",
-        "/home/yuna/myCA/mqtt_server/private/mqtt_server.key.pem",
-        password_callback);
-    if (ret != MOSQ_ERR_SUCCESS) {
-        std::cerr << "Failed to set TLS options: " << mosquitto_strerror(ret) << std::endl;
-        mosquitto_destroy(mosq);
-        mosquitto_lib_cleanup();
-        return 1;
-    }
+        "/home/yuna/myCA/mqtt_server/certs/mqtt_server.cert.pem",             // 클라이언트 인증서
+        "/home/yuna/myCA/mqtt_server/private/mqtt_server.key.pem",            // 클라이언트 키
+        password_callback                                                    // 키 비번 콜백
+    );
+    check_mosq_connect_error(ret);
 
-    // TLS 옵션 - 서버 인증서 검증 활성화
-    ret = mosquitto_tls_opts_set(mosq, 1, nullptr, nullptr);
-    if (ret != MOSQ_ERR_SUCCESS) {
-        std::cerr << "Failed to set TLS options 2: " << mosquitto_strerror(ret) << std::endl;
-        mosquitto_destroy(mosq);
-        mosquitto_lib_cleanup();
-        return 1;
-    }
+    // TLS 옵션: 서버 인증서 검증 활성화
+    ret = mosquitto_tls_opts_set(mosq, /*require=true*/ 1, nullptr, nullptr);
+    check_mosq_connect_error(ret);
+
+    // 개발 중에만 호스트명 검증 비활성화 (운영 시 false 로 변경)
+    mosquitto_tls_insecure_set(mosq, false);
 
     // TLS 포트로 연결 (예: 8883)
     ret = mosquitto_connect(mosq, BROKER_ADDRESS.c_str(), 8883, 60);
-    if (ret != MOSQ_ERR_SUCCESS) {
-        std::cerr << "Failed to connect broker with TLS: " << mosquitto_strerror(ret) << std::endl;
-        mosquitto_destroy(mosq);
-        mosquitto_lib_cleanup();
-        return 1;
-    }
+    check_mosq_connect_error(ret);
 
+    // 비동기 루프 시작
     ret = mosquitto_loop_start(mosq);
-    if (ret != MOSQ_ERR_SUCCESS) {
-        std::cerr << "Failed to start mosquitto loop: " << mosquitto_strerror(ret) << std::endl;
-        mosquitto_destroy(mosq);
-        mosquitto_lib_cleanup();
-        return 1;
-    }
+    check_mosq_connect_error(ret);
 
     publish_event(mosq, CONNECTION_SUCCESS);
 
@@ -90,7 +76,7 @@ int main() {
     zmq::context_t ctx(1);
     zmq::socket_t sub(ctx, zmq::socket_type::sub);
     sub.connect("ipc:///tmp/speed_detector.ipc");
-    sub.setsockopt(ZMQ_SUBSCRIBE, "", 0);
+    sub.set(zmq::sockopt::subscribe, "");
 
     // 기존 로직(불법 주정차/보행자 감지)
     std::thread meta_loop([&]() {
@@ -129,4 +115,6 @@ int main() {
     mosquitto_lib_cleanup();
     return 0;
 }
-//g++ -std=c++17 -o my_mqtt_app mqtt_alert_s.cpp -lmosquitto -lzmq -pthread
+
+// 빌드 예시:
+// g++ -std=c++17 -o mqtt_alert_s mqtt_alert_s.cpp -lmosquitto -lzmq -pthread

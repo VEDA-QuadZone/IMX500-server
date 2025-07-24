@@ -114,6 +114,7 @@ std::ostringstream oss;
 oss
   << "ADD_HISTORY "
   << date << " "
+  <<"images/"
   << just_name << " "
   << plate << " "
   << "1 - - "

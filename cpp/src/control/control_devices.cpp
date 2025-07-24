@@ -156,7 +156,7 @@ cv::Mat preprocess_image(const std::string& path) {
 
 void play_sound_async(const std::string& file_path) {
     std::thread([file_path]() {
-        std::string cmd = "aplay -D plughw:2,0 " + file_path + " > /dev/null 2>&1";
+        std::string cmd = "aplay -D plughw:3,0 " + file_path + " > /dev/null 2>&1";
         system(cmd.c_str());
     }).detach();
 }

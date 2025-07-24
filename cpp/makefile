@@ -43,7 +43,8 @@ UPLOAD_ILLEGAL_SPEED_EXE := build/upload_illegal_speed
 MQTT_ALERT_SRC       := src/mqtt/mqtt_alert.cpp
 MQTT_ALERT_EXE       := build/mqtt_alert
 
-
+MQTT_ALERT_S_SRC   	:= src/mqtt/mqtt_alert_s.cpp
+MQTT_ALERT_S_EXE   	:= build/mqtt_alert_s
 CONTROL_SRC          := src/control/control_devices.cpp
 CONTROL_OBJS         := $(PERSON_OBJ)
 CONTROL_EXE          := build/control_devices
@@ -58,6 +59,7 @@ all: $(UPLOAD_EXE) \
     $(UPLOAD_ILLEGAL_EXE) \
 	$(UPLOAD_ILLEGAL_SPEED_EXE) \
     $(MQTT_ALERT_EXE) \
+	$(MQTT_ALERT_S_EXE) \
     $(CONTROL_EXE) \
 	$(SPEED_DAEMON_EXE) \
     control_assets
@@ -100,6 +102,11 @@ $(UPLOAD_ILLEGAL_SPEED_EXE): $(UPLOAD_ILLEGAL_SPEED_SRC) $(LICENSE_OBJ) $(PARKIN
 $(MQTT_ALERT_EXE): $(PARKING_OBJ) $(PERSON_OBJ) | build
 	$(CXX) $(CXXFLAGS) \
 	  $(MQTT_ALERT_SRC) $(PARKING_OBJ) $(PERSON_OBJ) \
+	  -o $@ $(LDFLAGS)
+	  
+$(MQTT_ALERT_S_EXE): $(PARKING_OBJ) $(PERSON_OBJ) | build
+	$(CXX) $(CXXFLAGS) \
+	  $(MQTT_ALERT_S_SRC) $(PARKING_OBJ) $(PERSON_OBJ) \
 	  -o $@ $(LDFLAGS)
 
 $(CONTROL_EXE): $(CONTROL_SRC) $(CONTROL_OBJS) | build

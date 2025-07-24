@@ -4,6 +4,6 @@ python3 try3.py \
   --threshold 0.55 \
   --iou 0.5 \
   --max-detections 10 \
-  --show-bbox \
-  --show-timestamp
+  #--show-bbox \
+  #--show-timestamp
 

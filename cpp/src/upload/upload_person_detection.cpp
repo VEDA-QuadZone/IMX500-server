@@ -160,6 +160,7 @@ static bool send_add_history(const std::string& date,
 
     std::string cmd = "ADD_HISTORY "
                     + date + " "
+                    +"images/"
                     + img_path + " "
                     + plate + " "
                     + std::to_string(event_type) + "\n";
