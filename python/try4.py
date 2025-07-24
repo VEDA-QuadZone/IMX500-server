@@ -12,9 +12,15 @@ import numpy as np
 from picamera2 import Picamera2, MappedArray
 from picamera2.devices import IMX500
 from picamera2.devices.imx500 import NetworkIntrinsics, postprocess_nanodet_detection
+import subprocess
+
 prev_time = time.time()
 fps = 0.0
-# 엣헴 박유나님이 스냅샷을 작업하신다 엣헴 
+
+CAMERA_WIDTH      = 1280
+CAMERA_HEIGHT     = 720
+CAMERA_RESOLUTION = (CAMERA_WIDTH, CAMERA_HEIGHT)
+
 # snapshot ring-buffer
 MAX_SNAPSHOTS=400
 #현재까지 몇 번째 스냅샷을 썼는지 카운트
@@ -49,14 +55,6 @@ def write_frame(name: str, frame: np.ndarray):
     buf[:] = frame
     shm.close()
 
-'''
-def write_metadata(name: str, metadata: dict, max_size: int = 8192):
-    data = json.dumps(metadata).encode('utf-8')
-    shm = create_or_attach(name, max_size)
-    shm.buf[:len(data)] = data
-    shm.buf[len(data)] = 0
-    shm.close()
-'''
 def write_metadata(name: str, metadata: dict, max_size: int = 65536):
     data = json.dumps(metadata).encode('utf-8')
     shm = create_or_attach(name, max_size)
@@ -87,6 +85,7 @@ def unlink_snapshot(prefix: str):
             continue
         try:
             shm = shared_memory.SharedMemory(name=fname)
+            resource_tracker.unregister(shm._name, 'shared_memory')
             shm.close()
             shm.unlink()
         except FileNotFoundError:
@@ -176,6 +175,7 @@ tracker          = None
 best_shots       = {}                 # id -> (conf, crop)
 position_history = defaultdict(lambda: deque(maxlen=30))
 frame_count      = 0
+fps_history = deque(maxlen=10)
 
 @lru_cache
 def get_labels():
@@ -229,9 +229,11 @@ def read_overlay_config():
         try:
             # 먼저 attach 시도
             shm = shared_memory.SharedMemory(name="overlay_config")
+            resource_tracker.unregister(shm._name, 'shared_memory')
         except FileNotFoundError:
             # 없으면 새로 생성
             shm = shared_memory.SharedMemory(name="overlay_config", create=True, size=1024)
+            resource_tracker.unregister(shm._name, 'shared_memory')
             default = {"show_bbox": False, "show_timestamp": False}
             encoded = json.dumps(default).encode('utf-8')
             shm.buf[:len(encoded)] = encoded
@@ -251,7 +253,64 @@ def read_overlay_config():
         print(f"[!] read_overlay_config error: {e}")
         return False, False
 
+def get_camera_device_path():
+    return f"/dev/video{imx500.camera_num}"
 
+def get_camera_model():
+    try:
+        # 우선 다양한 키 시도 (IMX500에서 'Sensor' 또는 'CameraName'이 더 자주 쓰임)
+        for key in ("Model", "Sensor", "CameraName"):
+            val = picam2.camera_properties.get(key)
+            if val:
+                return str(val)
+        return get_camera_model_from_libcamera()
+    except:
+        return get_camera_model_from_libcamera()
+
+
+def get_camera_status():
+    try:
+        return "Connected" if picam2.started else "Disconnected"
+    except:
+        return "Disconnected"
+
+def read_cpu_temp():
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp") as f:
+            temp = int(f.read())
+        return f"{temp / 1000.0:.1f}°C"
+    except:
+        return "Unknown"
+
+def read_external_rtsp_fps():
+    try:
+        shm = shared_memory.SharedMemory(name="shm_rtsp_fps")
+        fps_bytes = bytes(shm.buf[:4])
+        shm.close()
+        return int.from_bytes(fps_bytes, byteorder='little')
+    except:
+        return 0
+
+def write_status_shm():
+    try:
+        status = {
+            "camera_model": get_camera_model(),
+            "device": get_camera_device_path(),
+            "status": get_camera_status(),
+            "resolution": f"{CAMERA_WIDTH}x{CAMERA_HEIGHT}",
+            "fps": read_external_rtsp_fps(),
+            "ai_model": os.path.basename(args.model),
+            "ai_status": "Active",
+            "temperature": read_cpu_temp(),
+            "last_updated": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        }
+        encoded = json.dumps(status).encode()
+        shm = create_or_attach("shm_status", len(encoded) + 1)
+        shm.buf[:len(encoded)] = encoded
+        shm.buf[len(encoded)] = 0
+        shm.close()
+    except Exception as e:
+        print(f"[!] Failed to write status shm: {e}")
 
 def draw_bbox_only(img, dets):
     for det in dets:
@@ -439,16 +498,23 @@ def draw_and_publish(request, stream="main"):
     # 8) write latest frame‐slot index
     write_index(INDEX_SHM, slot)
     
-    # —— 콘솔에 FPS 출력 ——  
+    '''# —— 콘솔에 FPS 출력 ——  
     global prev_time, fps
     now = time.time()
     dt = now - prev_time
+
     if dt > 0:
-        fps = 1.0 / dt
+        current_fps = 1.0 / dt
+        fps_history.append(current_fps)
+        fps = sum(fps_history) / len(fps_history)
+
     prev_time = now
 
-    # '\r'로 같은 줄에 덮어쓰기, flush=True로 즉시 표시
     print(f"\rFPS: {fps:.1f}", end="", flush=True)
+    '''
+
+    # 상태 공유 JSON 쓰기
+    write_status_shm()
 
 def get_args():
     p = argparse.ArgumentParser()
@@ -482,7 +548,7 @@ def main():
 
     picam2 = Picamera2(imx500.camera_num)
     cfg = picam2.create_preview_configuration(
-        main={"size": (1280, 720)},
+        main={"size": CAMERA_RESOLUTION},
         controls={"FrameRate": intrinsics.inference_rate}
     )
     picam2.start(cfg, show_preview=True)

@@ -49,9 +49,9 @@ int main() {
         mosq,
         "/home/sejin/myCA/certs/ca.cert.pem",                                  // CA 공개키
         nullptr,
-        "/home/sejin/myCA/mqtt_server/certs/mqtt_server.cert.pem",             // 클라이언트 인증서
-        "/home/sejin/myCA/mqtt_server/private/mqtt_server.key.pem",            // 클라이언트 키
-        password_callback                                                    // 키 비번 콜백
+        "/home/sejin/myCA/pi_client/certs/pi.cert.pem",                        // pi_client 인증서
+        "/home/sejin/myCA/pi_client/private/pi.key.pem",                       // pi_client 개인키
+        nullptr                                                               // 키에 패스프레이즈 없으면 nullptr
     );
     check_mosq_connect_error(ret);
 

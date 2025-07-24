@@ -1,71 +1,119 @@
-#include <unistd.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <fcntl.h>
 #include <iostream>
-#include <gst/gst.h>
-#include <gst/rtsp-server/rtsp-server.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <opencv2/opencv.hpp>
+#include <chrono>
+#include <thread>
+#include <cstring>
+#include <sys/stat.h>
 
-void start_gst_rtsp_server(int fd) {
-    gst_init(nullptr, nullptr);
+#define FRAME_WIDTH 1280
+#define FRAME_HEIGHT 720
+#define FRAME_CHANNELS 3  // BGR
+#define FRAME_SIZE (FRAME_WIDTH * FRAME_HEIGHT * FRAME_CHANNELS)
 
-    GstRTSPServer* server = gst_rtsp_server_new();
-    GstRTSPMountPoints* mounts = gst_rtsp_server_get_mount_points(server);
-    GstRTSPMediaFactory* factory = gst_rtsp_media_factory_new();
+#define BUFFER_SLOTS 8
+#define INDEX_SHM "/dev/shm/shm_index"
+#define FRAME_SHM_BASE "/dev/shm/shm_frame_"
+#define RTSP_FPS_SHM "/dev/shm/shm_rtsp_fps"
 
-    // 핵심 옵션: do-timestamp, blocking
-    gchar* launch_str = g_strdup_printf(
-        "( fdsrc fd=%d do-timestamp=true blocking=true ! h264parse ! rtph264pay name=pay0 pt=96 config-interval=1 )",
-        fd
-    );
+using namespace std::chrono;
 
-    gst_rtsp_media_factory_set_launch(factory, launch_str);
-    gst_rtsp_media_factory_set_shared(factory, TRUE);
-    gst_rtsp_mount_points_add_factory(mounts, "/video", factory);
-    g_object_unref(mounts);
+uint32_t readIndex() {
+    int fd = open(INDEX_SHM, O_RDONLY);
+    if (fd < 0) {
+        perror("open (index)");
+        return 0;
+    }
+    uint32_t index = 0;
+    read(fd, &index, sizeof(uint32_t));
+    close(fd);
+    return index % BUFFER_SLOTS;
+}
 
-    gst_rtsp_server_attach(server, NULL);
-    std::cout << "RTSP 서버가 rtsp://<IP>:8554/video 에서 실행 중입니다.\n";
+cv::Mat readFrameFromSlot(int slot) {
+    std::string shm_name = FRAME_SHM_BASE + std::to_string(slot);
+    int fd = open(shm_name.c_str(), O_RDONLY);
+    if (fd < 0) {
+        perror(("open " + shm_name).c_str());
+        return cv::Mat();
+    }
 
-    GMainLoop* loop = g_main_loop_new(NULL, FALSE);
-    g_main_loop_run(loop);
+    void* ptr = mmap(nullptr, FRAME_WIDTH * FRAME_HEIGHT * 4, PROT_READ, MAP_SHARED, fd, 0);
+    if (ptr == MAP_FAILED) {
+        perror("mmap");
+        close(fd);
+        return cv::Mat();
+    }
+
+    cv::Mat bgra(FRAME_HEIGHT, FRAME_WIDTH, CV_8UC4, ptr);
+    cv::Mat bgr;
+    cv::cvtColor(bgra, bgr, cv::COLOR_BGRA2BGR);
+
+    munmap(ptr, FRAME_WIDTH * FRAME_HEIGHT * 4);
+    close(fd);
+
+    return bgr;
+}
+
+void writeRtspFpsToShm(uint32_t fps) {
+    int fd = shm_open("/shm_rtsp_fps", O_CREAT | O_RDWR, 0666);
+    if (fd >= 0) {
+        ftruncate(fd, sizeof(uint32_t));
+        write(fd, &fps, sizeof(uint32_t));
+        close(fd);
+    }
 }
 
 int main() {
-    int pipefd[2];
-    if (pipe(pipefd) == -1) {
-        perror("pipe 생성 실패");
+    const char* cmd =
+        "ffmpeg -f rawvideo -pixel_format bgr24 -video_size 1280x720 -framerate 30 "
+        "-i - -c:v h264_v4l2m2m -b:v 2M -f rtsp rtsp://localhost:8554/test";
+
+    std::cout << "[INFO] Starting FFmpeg subprocess..." << std::endl;
+    FILE* pipe = popen(cmd, "w");
+    if (!pipe) {
+        std::cerr << "[ERROR] Failed to launch FFmpeg" << std::endl;
         return 1;
     }
 
-    pid_t cam_pid = fork();
-    if (cam_pid == 0) {
-        // 자식 프로세스: libcamera-vid 실행
-        dup2(pipefd[1], STDOUT_FILENO); // stdout → 파이프 쓰기
-        close(pipefd[0]); // 읽기 닫음 (자식)
-        // ✅ 파이프 쓰기 끝은 닫지 말고 남겨둬야 스트림 유지됨
+    auto nextFrameTime = steady_clock::now();
+    int frameCount = 0;
+    auto lastFpsReport = steady_clock::now();
 
-        const char* camera_cmd[] = {
-            "libcamera-vid",
-            "-t", "0",
-            "--codec", "h264",          // 하드웨어 인코더
-            "--inline", "--flush",      // SPS/PPS 포함, 버퍼링 제거
-            "--width", "1280",
-            "--height", "720",
-            "--framerate", "30",
-            "--output", "-",            // stdout으로 출력
-            NULL
-        };
+    while (true) {
+        nextFrameTime += milliseconds(33);  // 30fps 목표
 
-        execvp(camera_cmd[0], (char* const*)camera_cmd);
-        perror("libcamera-vid 실행 실패");
-        exit(1);
+        int slot = readIndex();
+        cv::Mat frame = readFrameFromSlot(slot);
+        if (frame.empty()) {
+            std::cerr << "[WARN] Empty frame, skipping..." << std::endl;
+            std::this_thread::sleep_until(nextFrameTime);
+            continue;
+        }
+
+        size_t written = fwrite(frame.data, 1, frame.total() * frame.elemSize(), pipe);
+        if (written != frame.total() * frame.elemSize()) {
+            std::cerr << "[ERROR] Failed to write frame to FFmpeg stdin" << std::endl;
+            break;
+        }
+
+        frameCount++;
+        auto now = steady_clock::now();
+        auto elapsedSec = duration_cast<seconds>(now - lastFpsReport).count();
+
+        if (elapsedSec >= 1) {
+            uint32_t fps = frameCount / elapsedSec;
+            writeRtspFpsToShm(fps);
+            std::cout << "[INFO] RTSP FPS: " << fps << std::endl;
+            frameCount = 0;
+            lastFpsReport = now;
+        }
+
+        std::this_thread::sleep_until(nextFrameTime);
     }
 
-    // 부모 프로세스
-    close(pipefd[1]); // 쓰기 닫기 (부모는 읽기만)
-    int camera_output_fd = pipefd[0];
-
-    start_gst_rtsp_server(camera_output_fd);
+    pclose(pipe);
     return 0;
 }

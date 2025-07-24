@@ -21,6 +21,7 @@ LDFLAGS       := -pthread -lcurl \
 				-Wl,-rpath,/home/sejin/onnxruntime-linux-aarch64-1.16.3/lib \
 				-Wl,-rpath,/home/sejin/myproject/cpp/src/detect/assets/model \
                 $(shell pkg-config --libs opencv4 libmosquitto) \
+				-lssl -lcrypto \
                 -llgpio -lzmq
 
 # 오브젝트 및 실행파일 정의

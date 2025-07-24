@@ -13,13 +13,52 @@
 
 #include <opencv2/opencv.hpp>
 #include <nlohmann/json.hpp>
-
+#include <openssl/ssl.h>
+#include <openssl/err.h>
 #include "detector.hpp"   // std::vector<int> detect_persons();
 #include "config.hpp"     // TCP_SERVER_IP, TCP_SERVER_PORT
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
+//openssl
+static SSL_CTX* clientCtx = nullptr;
 
+static void initClientCtx() {
+    SSL_library_init();
+    OpenSSL_add_all_algorithms();
+    SSL_load_error_strings();
+
+    const SSL_METHOD* method = TLS_client_method();
+    clientCtx = SSL_CTX_new(method);
+    if (!clientCtx) {
+        ERR_print_errors_fp(stderr);
+        std::exit(1);
+    }
+
+    // 클라이언트 인증서 + 키 로드
+    if (SSL_CTX_use_certificate_file(clientCtx,
+            "/home/sejin/myCA/pi_client/certs/pi.cert.pem",
+            SSL_FILETYPE_PEM) <= 0)
+        ERR_print_errors_fp(stderr);
+
+    if (SSL_CTX_use_PrivateKey_file(clientCtx,
+            "/home/sejin/myCA/pi_client/private/pi.key.pem",
+            SSL_FILETYPE_PEM) <= 0)
+        ERR_print_errors_fp(stderr);
+
+    if (!SSL_CTX_check_private_key(clientCtx)) {
+        std::cerr << "Private key does not match the certificate\n";
+        std::exit(1);
+    }
+
+    // CA 로드 (서버 인증서 검증용)
+    if (!SSL_CTX_load_verify_locations(clientCtx,
+            "/home/sejin/myCA/certs/ca.cert.pem", nullptr))
+        ERR_print_errors_fp(stderr);
+
+    SSL_CTX_set_verify(clientCtx, SSL_VERIFY_PEER, nullptr);
+    SSL_CTX_set_verify_depth(clientCtx, 4);
+}
 // 1) 현재 시각을 "YYYY-MM-DD HH:MM:SS" 로 반환
 static std::string now_str() {
     auto now = std::chrono::system_clock::now();
@@ -27,7 +66,7 @@ static std::string now_str() {
     std::tm tm{};
     localtime_r(&t_c, &tm);
     char buf[20];
-    std::strftime(buf, sizeof(buf), "%F %T", &tm);
+    std::strftime(buf, sizeof(buf), "%F_%T", &tm);
     return std::string(buf);
 }
 
@@ -82,151 +121,126 @@ static bool load_snapshot(int target_id,
 }
 
 // 4) 메모리 버퍼(buf)와 filename으로 서버에 바로 전송
-static bool send_upload_image(const std::vector<uchar>& buf,
-                               const std::string& filename) {
+static bool send_upload_image(SSL* ssl,
+                              const std::vector<uchar>& buf,
+                              const std::string& filename) {
     size_t size = buf.size();
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) { perror("socket"); return false; }
-    sockaddr_in serv{};
-    serv.sin_family = AF_INET;
-    serv.sin_port   = htons(TCP_SERVER_PORT);
-    if (inet_pton(AF_INET, TCP_SERVER_IP.c_str(), &serv.sin_addr) <= 0 ||
-        connect(sock, (sockaddr*)&serv, sizeof(serv)) < 0) {
-        perror("connect"); close(sock); return false;
-    }
-
+    // 헤더 전송
     std::string header = "UPLOAD " + filename + " " + std::to_string(size) + "\n";
-    if (send(sock, header.data(), header.size(), 0) < 0) {
-        perror("send header"); close(sock); return false;
+    if (SSL_write(ssl, header.data(), header.size()) <= 0) {
+        perror("SSL_write header");
+        return false;
     }
-
+    // 바디 전송
     size_t sent = 0;
     while (sent < size) {
-        ssize_t s = send(sock, buf.data() + sent, size - sent, 0);
-        if (s <= 0) { perror("send data"); close(sock); return false; }
-        sent += s;
+        int w = SSL_write(ssl, buf.data()+sent, size-sent);
+        if (w <= 0) {
+            perror("SSL_write data");
+            return false;
+        }
+        sent += w;
     }
-
-    if (shutdown(sock, SHUT_WR) < 0) perror("shutdown UPLOAD SHUT_WR");
-
+    // 응답 수신
     std::string resp;
     char rbuf[512];
     while (true) {
-        ssize_t n = recv(sock, rbuf, sizeof(rbuf), 0);
+        int n = SSL_read(ssl, rbuf, sizeof(rbuf));
         if (n <= 0) break;
         resp.append(rbuf, n);
         if (resp.find('}') != std::string::npos) break;
     }
-    if (resp.empty()) {
-        std::cerr << "[ERROR] no response from server\n";
-        close(sock);
-        return false;
-    }
-    std::cout << "[TCP] Server response to UPLOAD: " << resp << std::endl;
-
+    std::cout << "[TCP] UPLOAD resp: " << resp << "\n";
+    // 결과 파싱
     try {
         auto j = json::parse(resp);
-        if (j.value("status", "error") != "success" || j.value("code", 0) != 200) {
-            std::cerr << "[ERROR] UPLOAD failed: " << j.value("message", "unknown error") << std::endl;
-            close(sock);
-            return false;
-        }
-    } catch (const std::exception& e) {
-        std::cerr << "[ERROR] JSON parse error: " << e.what() << std::endl;
-        close(sock);
+        return (j.value("status","") == "success" && j.value("code",0) == 200);
+    } catch (...) {
         return false;
     }
-
-    close(sock);
-    return true;
 }
 
 // 5) ADD_HISTORY
-static bool send_add_history(const std::string& date,
-                             const std::string& img_path,
+static bool send_add_history(SSL* ssl,
+                             const std::string& date,
+                             const std::string& img,
                              const std::string& plate,
                              int event_type) {
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) { perror("socket"); return false; }
-    sockaddr_in serv{};
-    serv.sin_family = AF_INET;
-    serv.sin_port   = htons(TCP_SERVER_PORT);
-    if (inet_pton(AF_INET, TCP_SERVER_IP.c_str(), &serv.sin_addr) <= 0) {
-        perror("inet_pton"); close(sock); return false;
+    std::string cmd = "ADD_HISTORY " + date
+                        + " images/" + img
+                        + " " + plate
+                        + " " + std::to_string(event_type)
+                        + "\n";
+    if (SSL_write(ssl, cmd.c_str(), cmd.size()) <= 0) {
+        perror("SSL_write ADD_HISTORY");
+        return false;
     }
-    if (connect(sock, (sockaddr*)&serv, sizeof(serv)) < 0) {
-        perror("connect"); close(sock); return false;
-    }
-
-    std::string cmd = "ADD_HISTORY "
-                    + date + " "
-                    +"images/"
-                    + img_path + " "
-                    + plate + " "
-                    + std::to_string(event_type) + "\n";
-    if (send(sock, cmd.c_str(), cmd.size(), 0) < 0) {
-        perror("send"); close(sock); return false;
-    }
-    if (shutdown(sock, SHUT_WR) < 0) perror("shutdown ADD_HISTORY SHUT_WR");
-
-    char resp_buf[1024];
-    int n = recv(sock, resp_buf, sizeof(resp_buf)-1, 0);
+    char buf2[1024];
+    int n = SSL_read(ssl, buf2, sizeof(buf2)-1);
     if (n > 0) {
-        resp_buf[n] = '\0';
-        std::cout << "[TCP] Server response to ADD_HISTORY: " << resp_buf << std::endl;
-    } else if (n == 0) {
-        std::cout << "[TCP] Server closed connection after ADD_HISTORY" << std::endl;
-    } else if (errno == ECONNRESET) {
-        std::cout << "[TCP] Connection reset by peer after ADD_HISTORY; assuming success" << std::endl;
-    } else {
-        perror("recv");
+        buf2[n] = '\0';
+        std::cout << "[TCP] ADD_HISTORY resp: " << buf2 << "\n";
     }
-    close(sock);
-    std::cout << "[TCP] Sent ADD_HISTORY: " << cmd;
     return true;
 }
 
 int main() {
+    initClientCtx();
+
+    // 1) TCP 연결 + TLS 핸드쉐이크 (한 번만!)
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) { perror("socket"); return 1; }
+    sockaddr_in serv{};
+    serv.sin_family = AF_INET;
+    serv.sin_port   = htons(TCP_SERVER_PORT);
+    inet_pton(AF_INET, TCP_SERVER_IP.c_str(), &serv.sin_addr);
+    if (connect(sock, (sockaddr*)&serv, sizeof(serv)) < 0) {
+        perror("connect"); return 1;
+    }
+    SSL* ssl = SSL_new(clientCtx);
+    SSL_set_fd(ssl, sock);
+    if (SSL_connect(ssl) <= 0) {
+        ERR_print_errors_fp(stderr);
+        return 1;
+    }
+    std::cout << "[+] TLS connection established\n";
+
     std::set<int> prev_ids, reported;
 
     while (true) {
         auto ids = detect_persons();
         std::set<int> current(ids.begin(), ids.end());
 
-        // 사라진 ID만 처리
         for (int id : prev_ids) {
             if (reported.count(id)) continue;
 
-            cv::Mat img;
-            std::string ts;
+            cv::Mat img; std::string ts;
             if (!load_snapshot(id, img, ts)) continue;
 
-            // 1) 메모리에서 JPEG로 인코딩 않고 바로 서버 업로드
+            // encode
             std::vector<uchar> buf;
-            if (!cv::imencode(".jpg", img, buf)) {
-                std::cerr << "[ERROR] imencode failed for ID=" << id << "\n";
-                continue;
-            }
+            if (!cv::imencode(".jpg", img, buf)) continue;
             std::string safe_ts = ts;
             std::replace(safe_ts.begin(), safe_ts.end(), ' ', '_');
             std::replace(safe_ts.begin(), safe_ts.end(), ':', '-');
             std::string filename = "person_" + std::to_string(id) + "_" + safe_ts + ".jpg";
 
-            if (!send_upload_image(buf, filename)) continue;
+            if (!send_upload_image(ssl, buf, filename)) continue;
 
-            // 3) ADD_HISTORY
-            if (!ts.empty()) {
-                std::string date = ts.substr(0,4) + "-" + ts.substr(4,2) + "-" + ts.substr(6,2) + "_"
-                                 + ts.substr(9,2) + ":" + ts.substr(11,2) + ":" + ts.substr(13,2);
-                if (send_add_history(date, filename, "-", 2)) {
-                    reported.insert(id);
-                }
-            }
+                      // ADD_HISTORY: 지금 시간 사용
+            std::string date = now_str();
+            if (send_add_history(ssl, date, filename, "-", 2))
+                reported.insert(id);
         }
 
         prev_ids = std::move(current);
-        std::cout << "[DEBUG] Loop tick, prev_ids size=" << prev_ids.size() << std::endl;
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
+
+    // cleanup (도달하지 않지만)
+    SSL_shutdown(ssl);
+    SSL_free(ssl);
+    close(sock);
+    SSL_CTX_free(clientCtx);
     return 0;
 }
