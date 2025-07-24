@@ -47,10 +47,10 @@ int main() {
     // TLS 설정 (mTLS: 서버 인증서 검증용 CA + 클라이언트 cert/key)
     int ret = mosquitto_tls_set(
         mosq,
-        "/home/yuna/myCA/certs/ca.cert.pem",                                  // CA 공개키
+        "/home/sejin/myCA/certs/ca.cert.pem",                                  // CA 공개키
         nullptr,
-        "/home/yuna/myCA/mqtt_server/certs/mqtt_server.cert.pem",             // 클라이언트 인증서
-        "/home/yuna/myCA/mqtt_server/private/mqtt_server.key.pem",            // 클라이언트 키
+        "/home/sejin/myCA/mqtt_server/certs/mqtt_server.cert.pem",             // 클라이언트 인증서
+        "/home/sejin/myCA/mqtt_server/private/mqtt_server.key.pem",            // 클라이언트 키
         password_callback                                                    // 키 비번 콜백
     );
     check_mosq_connect_error(ret);

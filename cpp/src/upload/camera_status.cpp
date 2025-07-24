@@ -7,12 +7,10 @@
 #include <thread>
 #include <opencv2/opencv.hpp>
 #include <nlohmann/json.hpp>
-#include <arpa/inet.h>
-#include <unistd.h>
 
 using json = nlohmann::json;
 
-// 1. 카메라 모델명 획득 (udevadm 이용)
+// 1. 카메라 모델명 획득
 std::string get_camera_model() {
     FILE* fp = popen("udevadm info --query=all --name=/dev/video0 | grep ID_MODEL=", "r");
     if (!fp) return "Unknown";
@@ -46,7 +44,7 @@ std::string get_temperature() {
     return std::to_string(temp / 1000.0) + "°C";
 }
 
-// 4. AI 모델 파일명 (예: mobilenet_ssd.json)
+// 4. AI 모델 파일명
 std::string get_ai_model() {
     std::string path = "/usr/share/rpi-camera-assets/imx500_mobilenet_ssd.json";
     std::ifstream file(path);
@@ -54,53 +52,51 @@ std::string get_ai_model() {
 }
 
 int main() {
-    const char* server_ip = "192.168.0.32"; // 수정 필요
-    const int server_port = 5000;
-
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
-    sockaddr_in serv_addr{};
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(server_port);
-    inet_pton(AF_INET, server_ip, &serv_addr.sin_addr);
-
-    if (connect(sock, (sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
-        perror("connect");
-        return 1;
-    }
-
     cv::VideoCapture cap(0);
-    if (!cap.isOpened()) {
-        std::cerr << "Camera open failed\n";
-        return 1;
+    bool camera_available = cap.isOpened();
+    double frame_width = 0, frame_height = 0, fps = 0;
+
+    if (camera_available) {
+        // 미리 한번 읽어서 속성 값 추출
+        frame_width = cap.get(cv::CAP_PROP_FRAME_WIDTH);
+        frame_height = cap.get(cv::CAP_PROP_FRAME_HEIGHT);
+        fps = cap.get(cv::CAP_PROP_FPS);
     }
 
     while (true) {
-        cv::Mat frame;
-        bool ok = cap.read(frame);
+        std::string last_frame_ts = "None";
+        std::string error_msg = "Camera not available";
+        bool frame_ok = false;
+
+        if (camera_available) {
+            cv::Mat frame;
+            frame_ok = cap.read(frame);
+            if (frame_ok) {
+                last_frame_ts = get_time_str();
+                error_msg = "None";
+            } else {
+                error_msg = "Frame read failed";
+            }
+        }
 
         json status = {
             {"camera_model", get_camera_model()},
             {"device", "/dev/video0"},
-            {"status", cap.isOpened() ? "Connected" : "Disconnected"},
-            {"resolution", std::to_string((int)cap.get(cv::CAP_PROP_FRAME_WIDTH)) + "x" +
-                           std::to_string((int)cap.get(cv::CAP_PROP_FRAME_HEIGHT))},
-            {"fps", cap.get(cv::CAP_PROP_FPS)},
-            {"last_frame", ok ? get_time_str() : "None"},
+            {"status", camera_available ? "Connected" : "Disconnected"},
+            {"resolution", camera_available ? std::to_string((int)frame_width) + "x" + std::to_string((int)frame_height) : "N/A"},
+            {"fps", camera_available ? fps : 0},
+            {"last_frame", last_frame_ts},
             {"ai_model", get_ai_model()},
             {"ai_status", "Active"},
             {"temperature", get_temperature()},
-            {"error", ok ? "None" : "Frame read failed"}
+            {"error", error_msg}
         };
 
-        std::string json_str = status.dump() + "\n";
+        std::string json_str = status.dump(4); // Pretty print
+        std::cout << "[STATUS REPORT]\n" << json_str << "\n\n";
 
-        // 콘솔 출력
-        std::cout << "[SEND] " << json_str;
-
-        send(sock, json_str.c_str(), json_str.size(), 0);
         std::this_thread::sleep_for(std::chrono::seconds(2));
     }
 
-    close(sock);
     return 0;
 }

@@ -1,61 +1,119 @@
 #include <iostream>
-#include <cstdlib>
-#include <thread>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <opencv2/opencv.hpp>
 #include <chrono>
-#include <csignal>
+#include <thread>
+#include <cstring>
+#include <sys/stat.h>
 
-std::thread mediamtx_thread;
-std::thread stream_thread;
-bool running = true;
+#define FRAME_WIDTH 1280
+#define FRAME_HEIGHT 720
+#define FRAME_CHANNELS 3  // BGR
+#define FRAME_SIZE (FRAME_WIDTH * FRAME_HEIGHT * FRAME_CHANNELS)
 
-// MediaMTX 실행 (백그라운드)
-void start_mediamtx() {
-    std::cout << "[INFO] Starting MediaMTX..." << std::endl;
-    int ret = std::system("./mediamtx ./mediamtx.yml &");
-    if (ret != 0) {
-        std::cerr << "[ERROR] Failed to launch MediaMTX (code: " << ret << ")" << std::endl;
+#define BUFFER_SLOTS 8
+#define INDEX_SHM "/dev/shm/shm_index"
+#define FRAME_SHM_BASE "/dev/shm/shm_frame_"
+#define RTSP_FPS_SHM "/dev/shm/shm_rtsp_fps"
+
+using namespace std::chrono;
+
+uint32_t readIndex() {
+    int fd = open(INDEX_SHM, O_RDONLY);
+    if (fd < 0) {
+        perror("open (index)");
+        return 0;
     }
+    uint32_t index = 0;
+    read(fd, &index, sizeof(uint32_t));
+    close(fd);
+    return index % BUFFER_SLOTS;
 }
 
-// libcamera-vid → stdout → ffmpeg → RTSP 송출
-void start_streaming() {
-    const std::string command =
-        "libcamera-vid -t 0 --codec h264 --inline --flush "
-        "--width 1920 --height 1080 --framerate 30 --output - "
-        "| ffmpeg -re -i - -vcodec copy -f rtsp rtsp://localhost:8554/mystream";
-
-    std::cout << "[INFO] Starting video stream via libcamera-vid + ffmpeg..." << std::endl;
-    int ret = std::system(command.c_str());
-
-    if (ret != 0) {
-        std::cerr << "[ERROR] Streaming command failed with code: " << ret << std::endl;
+cv::Mat readFrameFromSlot(int slot) {
+    std::string shm_name = FRAME_SHM_BASE + std::to_string(slot);
+    int fd = open(shm_name.c_str(), O_RDONLY);
+    if (fd < 0) {
+        perror(("open " + shm_name).c_str());
+        return cv::Mat();
     }
+
+    void* ptr = mmap(nullptr, FRAME_WIDTH * FRAME_HEIGHT * 4, PROT_READ, MAP_SHARED, fd, 0);
+    if (ptr == MAP_FAILED) {
+        perror("mmap");
+        close(fd);
+        return cv::Mat();
+    }
+
+    cv::Mat bgra(FRAME_HEIGHT, FRAME_WIDTH, CV_8UC4, ptr);
+    cv::Mat bgr;
+    cv::cvtColor(bgra, bgr, cv::COLOR_BGRA2BGR);
+
+    munmap(ptr, FRAME_WIDTH * FRAME_HEIGHT * 4);
+    close(fd);
+
+    return bgr;
 }
 
-// SIGINT (Ctrl+C) 처리용
-void signal_handler(int) {
-    std::cout << "\n[INFO] Caught SIGINT. Exiting..." << std::endl;
-    running = false;
-    std::exit(0);
+void writeRtspFpsToShm(uint32_t fps) {
+    int fd = shm_open("/shm_rtsp_fps", O_CREAT | O_RDWR, 0666);
+    if (fd >= 0) {
+        ftruncate(fd, sizeof(uint32_t));
+        write(fd, &fps, sizeof(uint32_t));
+        close(fd);
+    }
 }
 
 int main() {
-    std::signal(SIGINT, signal_handler);
+    const char* cmd =
+        "ffmpeg -f rawvideo -pixel_format bgr24 -video_size 1280x720 -framerate 30 "
+        "-i - -c:v h264_v4l2m2m -b:v 2M -f rtsp rtsp://localhost:8554/test";
 
-    // 1) MediaMTX 실행
-    mediamtx_thread = std::thread(start_mediamtx);
-
-    // 2) 약간 대기 후 ffmpeg + libcamera-vid 실행 (MediaMTX 먼저 준비되도록)
-    std::this_thread::sleep_for(std::chrono::seconds(2));
-    stream_thread = std::thread(start_streaming);
-
-    // 3) 메인 루프: 상태 출력
-    while (running) {
-        std::cout << "[INFO] RTSP server running at rtsp://<IP>:8554/mystream" << std::endl;
-        std::this_thread::sleep_for(std::chrono::seconds(60));
+    std::cout << "[INFO] Starting FFmpeg subprocess..." << std::endl;
+    FILE* pipe = popen(cmd, "w");
+    if (!pipe) {
+        std::cerr << "[ERROR] Failed to launch FFmpeg" << std::endl;
+        return 1;
     }
 
-    stream_thread.join();
-    mediamtx_thread.join();
+    auto nextFrameTime = steady_clock::now();
+    int frameCount = 0;
+    auto lastFpsReport = steady_clock::now();
+
+    while (true) {
+        nextFrameTime += milliseconds(33);  // 30fps 목표
+
+        int slot = readIndex();
+        cv::Mat frame = readFrameFromSlot(slot);
+        if (frame.empty()) {
+            std::cerr << "[WARN] Empty frame, skipping..." << std::endl;
+            std::this_thread::sleep_until(nextFrameTime);
+            continue;
+        }
+
+        size_t written = fwrite(frame.data, 1, frame.total() * frame.elemSize(), pipe);
+        if (written != frame.total() * frame.elemSize()) {
+            std::cerr << "[ERROR] Failed to write frame to FFmpeg stdin" << std::endl;
+            break;
+        }
+
+        frameCount++;
+        auto now = steady_clock::now();
+        auto elapsedSec = duration_cast<seconds>(now - lastFpsReport).count();
+
+        if (elapsedSec >= 1) {
+            uint32_t fps = frameCount / elapsedSec;
+            writeRtspFpsToShm(fps);
+            std::cout << "[INFO] RTSP FPS: " << fps << std::endl;
+            frameCount = 0;
+            lastFpsReport = now;
+        }
+
+        std::this_thread::sleep_until(nextFrameTime);
+    }
+
+    pclose(pipe);
     return 0;
 }

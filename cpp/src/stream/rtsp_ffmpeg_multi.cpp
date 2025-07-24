@@ -6,8 +6,8 @@
 #include <chrono>
 #include <thread>
 
-#define FRAME_WIDTH 1920
-#define FRAME_HEIGHT 1080
+#define FRAME_WIDTH 1280
+#define FRAME_HEIGHT 720
 #define FRAME_CHANNELS 3  // BGR
 #define FRAME_SIZE (FRAME_WIDTH * FRAME_HEIGHT * FRAME_CHANNELS)
 
@@ -56,7 +56,7 @@ cv::Mat readFrameFromSlot(int slot) {
 
 int main() {
     const char* cmd =
-        "ffmpeg -f rawvideo -pixel_format bgr24 -video_size 1920x1080 -framerate 30 "
+        "ffmpeg -f rawvideo -pixel_format bgr24 -video_size 1280x720 -framerate 30 "
         "-i - -c:v h264_v4l2m2m -b:v 2M -f rtsp rtsp://localhost:8554/test";
 
     std::cout << "[INFO] Starting FFmpeg subprocess..." << std::endl;
