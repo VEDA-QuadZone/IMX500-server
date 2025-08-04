@@ -67,9 +67,13 @@ void writeRtspFpsToShm(uint32_t fps) {
 }
 
 int main() {
-    const char* cmd =
-        "ffmpeg -f rawvideo -pixel_format bgr24 -video_size 1280x720 -framerate 30 "
-        "-i - -c:v h264_v4l2m2m -b:v 2M -f rtsp rtsp://localhost:8554/test";
+       const char* cmd =
+        "ffmpeg -loglevel error "
+        "-f rawvideo -pixel_format bgr24 -video_size 1280x720 -framerate 30 "
+        "-i - "
+        "-c:v h264_v4l2m2m -b:v 2M "
+        "-rtsp_transport tcp "
+        "-f rtsp rtsps://localhost:8555/test";
 
     std::cout << "[INFO] Starting FFmpeg subprocess..." << std::endl;
     FILE* pipe = popen(cmd, "w");
@@ -117,3 +121,6 @@ int main() {
     pclose(pipe);
     return 0;
 }
+
+//g++ -o rtsp_sender rtsp_sender.cpp `pkg-config --cflags --libs opencv4` -std=c++17
+

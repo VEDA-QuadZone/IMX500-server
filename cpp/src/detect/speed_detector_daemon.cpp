@@ -39,7 +39,7 @@ std::vector<CarInfo> loadMetadata(const std::string& /*metaPath*/) {
       "timestamp": "2025-07-16T00:00:00",
       "car": [
         { "id": 0,  "conf": 1.0, "box": [200, 300, 100, 100], "history":[[200,300,100,100,0.0]] },
-        { "id": 11, "conf": 1.0, "box": [500, 300, 100, 100], "history":[[500,300,100,100,0.0]] }
+        { "id": 1, "conf": 1.0, "box": [500, 300, 100, 100], "history":[[500,300,100,100,0.0]] }
       ]
     })";
     json j = json::parse(dummy);

@@ -41,14 +41,17 @@ UPLOAD_ILLEGAL_EXE   := build/upload_illegal_parking
 UPLOAD_ILLEGAL_SPEED_SRC := src/upload/upload_illegal_speed.cpp
 UPLOAD_ILLEGAL_SPEED_EXE := build/upload_illegal_speed
 
-MQTT_ALERT_SRC       := src/mqtt/mqtt_alert.cpp
-MQTT_ALERT_EXE       := build/mqtt_alert
-
 MQTT_ALERT_S_SRC   	:= src/mqtt/mqtt_alert_s.cpp
 MQTT_ALERT_S_EXE   	:= build/mqtt_alert_s
 CONTROL_SRC          := src/control/control_devices.cpp
 CONTROL_OBJS         := $(PERSON_OBJ)
 CONTROL_EXE          := build/control_devices
+
+ALERT_DAEMON_SRC     := src/control/alert_daemon.cpp
+ALERT_DAEMON_EXE     := build/alert_daemon
+
+CONTROL_DEV_SRC      := src/control/control_dev.cpp
+CONTROL_DEV_EXE      := build/control_dev
 
 ASSETS_IMG_DIR       := build/assets/images
 ASSETS_AUD_DIR       := build/assets/audio
@@ -62,6 +65,8 @@ all: $(UPLOAD_EXE) \
     $(MQTT_ALERT_EXE) \
 	$(MQTT_ALERT_S_EXE) \
     $(CONTROL_EXE) \
+	$(ALERT_DAEMON_EXE) \
+    $(CONTROL_DEV_EXE) \
 	$(SPEED_DAEMON_EXE) \
     control_assets
 
@@ -114,6 +119,13 @@ $(CONTROL_EXE): $(CONTROL_SRC) $(CONTROL_OBJS) | build
 	$(CXX) $(CXXFLAGS) \
 	  $(CONTROL_SRC) $(CONTROL_OBJS) \
 	  -o $@ $(LDFLAGS)
+
+$(ALERT_DAEMON_EXE): $(ALERT_DAEMON_SRC) | build
+	$(CXX) $(CXXFLAGS) $(ALERT_DAEMON_SRC) -o $@ $(LDFLAGS)
+
+$(CONTROL_DEV_EXE): $(CONTROL_DEV_SRC) $(PERSON_OBJ) | build
+	$(CXX) $(CXXFLAGS) $(CONTROL_DEV_SRC) $(PERSON_OBJ) -o $@ $(LDFLAGS)
+
 
 $(SPEED_DAEMON_EXE): $(SPEED_DAEMON_SRC) | build
 	$(CXX) $(CXXFLAGS) $(SPEED_DAEMON_SRC) -o $@ $(LDFLAGS)

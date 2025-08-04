@@ -1,11 +1,12 @@
 #include <mosquitto.h>
 #include <iostream>
 #include <thread>
+#include <set>
 #include <zmq.hpp>
 #include <nlohmann/json.hpp>
 #include "../../include/config.hpp"
 #include "../../include/mqtt_utils.hpp"
-#include "../../include/detector.hpp"    // detect_persons()
+#include "../../include/detector.hpp"    // detect_persons(), detect_illegal_parking_ids()
 
 using json = nlohmann::json;
 
@@ -78,14 +79,30 @@ int main() {
     sub.connect("ipc:///tmp/speed_detector.ipc");
     sub.set(zmq::sockopt::subscribe, "");
 
+    // 중복 알림 방지를 위한 저장소 (전역 또는 main 함수 내 static)
+    std::set<int> alerted_person_ids;
+    std::set<int> alerted_illegal_parking_ids;
+
     // 기존 로직(불법 주정차/보행자 감지)
     std::thread meta_loop([&]() {
         while (true) {
+            // 불법 주정차 감지
             auto illegal_ids = detect_illegal_parking_ids();
-            if (!illegal_ids.empty()) publish_event(mosq, ILLEGAL_PARKING);
+            for (int id : illegal_ids) {
+                if (alerted_illegal_parking_ids.find(id) == alerted_illegal_parking_ids.end()) {
+                    publish_event(mosq, ILLEGAL_PARKING);
+                    alerted_illegal_parking_ids.insert(id);
+                }
+            }
 
+            // 사람 감지
             auto person_ids = detect_persons();
-            if (!person_ids.empty()) publish_event(mosq, PERSON_DETECTED);
+            for (int id : person_ids) {
+                if (alerted_person_ids.find(id) == alerted_person_ids.end()) {
+                    publish_event(mosq, PERSON_DETECTED);
+                    alerted_person_ids.insert(id);
+                }
+            }
 
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }

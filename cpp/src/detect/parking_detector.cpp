@@ -17,7 +17,7 @@ namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 // 파라미터
-static constexpr double STOP_SECONDS_THRESHOLD     = 10.0;  // 정지 시간 기준 (초)
+static constexpr double STOP_SECONDS_THRESHOLD     = 60.0;  // 정지 시간 기준 (초)
 static constexpr double PER_FRAME_MOVE_THRESHOLD   = 50.0;  // 프레임당 이동량 기준
 static constexpr int    MIN_HISTORY_LENGTH         = 1;     // 최소 history 길이
 static constexpr int    SHM_FRAME_COUNT            = 8;     // shm_frame_0~7

@@ -2,6 +2,7 @@
 #include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
+#include <set>
 
 static constexpr const char* META_SHM_BASE = "shm_meta";
 
@@ -50,11 +51,14 @@ std::vector<int> detect_persons(const nlohmann::json& /*meta*/) {
     }
 
     std::vector<int> ids;
+    std::set<int> seen_ids;
     if (meta.contains("person") && meta["person"].is_array()) {
-        ids.reserve(meta["person"].size());
         for (auto& obj : meta["person"]) {
             int id = obj.value("id", -1);
-            if (id >= 0) ids.push_back(id);
+            if (id >= 0 && seen_ids.find(id) == seen_ids.end()) {
+                ids.push_back(id);
+                seen_ids.insert(id);
+            }
         }
     }
     return ids;

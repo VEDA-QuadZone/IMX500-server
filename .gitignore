@@ -3,3 +3,4 @@ build/images/*
 
 # 예외적으로 .gitkeep은 추적 (선택)
 !build/images/.gitkeep
+runlogs/
