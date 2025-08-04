@@ -1,0 +1,10 @@
+rtsp: yes
+protocols: [tcp]
+encryption: strict
+rtspsAddress: :8555
+serverKey: /home/sejin/myCA/rtsp_server/private/rtsp_server.key.pem
+serverCert: /home/sejin/myCA/rtsp_server/certs/rtsp_server.cert.pem
+
+paths:
+  test:
+    source: publisher

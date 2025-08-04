@@ -1,20 +1,150 @@
 # Makefile
 
-CXX        := g++
-PKG_CONFIG := pkg-config
+CXX           := g++
+# ONNX Runtime include
+ORT_INC       := -I/home/sejin/onnxruntime-linux-aarch64-1.16.3/include
+# TensorFlow Lite include
+TFLITE_INC    := -I/home/sejin/tensorflow
 
-GST_CFLAGS := $(shell $(PKG_CONFIG) --cflags gstreamer-1.0 gstreamer-rtsp-server-1.0)
-GST_LIBS   := $(shell $(PKG_CONFIG) --libs   gstreamer-1.0 gstreamer-rtsp-server-1.0)
-GST_LIBS   += -lgstapp-1.0      # ← 여기 추가!
+CXXFLAGS      := -std=c++17 -Iinclude -Wall -g \
+                $(ORT_INC) $(TFLITE_INC) \
+                $(shell pkg-config --cflags opencv4 libmosquitto)
 
-CXXFLAGS   := -std=c++17 -Wall -O2
+# ONNX Runtime lib
+ORT_LIBS      := -L/home/sejin/onnxruntime-linux-aarch64-1.16.3/lib -lonnxruntime
+# TensorFlow Lite lib 위치와 이름 (libtensorflowlite.so)
+TFLITE_LIB_DIR := -L/home/sejin/myproject/cpp/src/detect/assets/model
+TFLITE_LIBS    := $(TFLITE_LIB_DIR) -ltensorflowlite
 
-.PHONY: all clean
+LDFLAGS       := -pthread -lcurl \
+                $(ORT_LIBS) $(TFLITE_LIBS) \
+				-Wl,-rpath,/home/sejin/onnxruntime-linux-aarch64-1.16.3/lib \
+				-Wl,-rpath,/home/sejin/myproject/cpp/src/detect/assets/model \
+                $(shell pkg-config --libs opencv4 libmosquitto) \
+				-lssl -lcrypto \
+                -llgpio -lzmq
 
-all: rtsp_server
+# 오브젝트 및 실행파일 정의
+PERSON_OBJ           := build/person_detector.o
+PARKING_OBJ          := build/parking_detector.o
+LICENSE_OBJ          := build/license_detector.o
 
-rtsp_server: rtsp_server.cpp
-	$(CXX) $(CXXFLAGS) $(GST_CFLAGS) rtsp_server.cpp -o rtsp_server $(GST_LIBS)
+SPEED_DAEMON_SRC := src/detect/speed_detector_daemon.cpp
+SPEED_DAEMON_EXE := build/speed_detector_daemon
 
+UPLOAD_SRC           := src/upload/upload_person_detection.cpp
+UPLOAD_EXE           := build/upload_person_detection
+
+UPLOAD_ILLEGAL_SRC   := src/upload/upload_illegal_parking.cpp
+UPLOAD_ILLEGAL_EXE   := build/upload_illegal_parking
+
+UPLOAD_ILLEGAL_SPEED_SRC := src/upload/upload_illegal_speed.cpp
+UPLOAD_ILLEGAL_SPEED_EXE := build/upload_illegal_speed
+
+MQTT_ALERT_S_SRC   	:= src/mqtt/mqtt_alert_s.cpp
+MQTT_ALERT_S_EXE   	:= build/mqtt_alert_s
+CONTROL_SRC          := src/control/control_devices.cpp
+CONTROL_OBJS         := $(PERSON_OBJ)
+CONTROL_EXE          := build/control_devices
+
+ALERT_DAEMON_SRC     := src/control/alert_daemon.cpp
+ALERT_DAEMON_EXE     := build/alert_daemon
+
+CONTROL_DEV_SRC      := src/control/control_dev.cpp
+CONTROL_DEV_EXE      := build/control_dev
+
+ASSETS_IMG_DIR       := build/assets/images
+ASSETS_AUD_DIR       := build/assets/audio
+
+# ─────────────────────────────────────────────────
+# all
+# ─────────────────────────────────────────────────
+all: $(UPLOAD_EXE) \
+    $(UPLOAD_ILLEGAL_EXE) \
+	$(UPLOAD_ILLEGAL_SPEED_EXE) \
+    $(MQTT_ALERT_EXE) \
+	$(MQTT_ALERT_S_EXE) \
+    $(CONTROL_EXE) \
+	$(ALERT_DAEMON_EXE) \
+    $(CONTROL_DEV_EXE) \
+	$(SPEED_DAEMON_EXE) \
+    control_assets
+
+# build 디렉터리 보장
+build:
+	@mkdir -p build
+
+# ─────────────────────────────────────────────────
+# 컴파일 규칙
+# ─────────────────────────────────────────────────
+
+$(PERSON_OBJ): src/detect/person_detector.cpp | build
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(PARKING_OBJ): src/detect/parking_detector.cpp | build
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(LICENSE_OBJ): src/detect/license_detector.cpp | build
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# ─────────────────────────────────────────────────
+# 링크 규칙
+# ─────────────────────────────────────────────────
+
+$(UPLOAD_EXE): $(PERSON_OBJ) | build
+	$(CXX) $(CXXFLAGS) \
+	  $(UPLOAD_SRC) $(PERSON_OBJ) \
+	  -o $@ $(LDFLAGS)
+
+#upload_illegal_parking (parking_detector.o + license_detector.o 링크)
+$(UPLOAD_ILLEGAL_EXE): $(PARKING_OBJ) $(LICENSE_OBJ) | build
+	$(CXX) $(CXXFLAGS) \
+	  $(UPLOAD_ILLEGAL_SRC) $(PARKING_OBJ) $(LICENSE_OBJ) \
+	  -o $@ $(LDFLAGS)
+
+$(UPLOAD_ILLEGAL_SPEED_EXE): $(UPLOAD_ILLEGAL_SPEED_SRC) $(LICENSE_OBJ) $(PARKING_OBJ) | build
+	$(CXX) $(CXXFLAGS) $(UPLOAD_ILLEGAL_SPEED_SRC) $(LICENSE_OBJ) $(PARKING_OBJ) -o $@ $(LDFLAGS)
+	
+$(MQTT_ALERT_EXE): $(PARKING_OBJ) $(PERSON_OBJ) | build
+	$(CXX) $(CXXFLAGS) \
+	  $(MQTT_ALERT_SRC) $(PARKING_OBJ) $(PERSON_OBJ) \
+	  -o $@ $(LDFLAGS)
+	  
+$(MQTT_ALERT_S_EXE): $(PARKING_OBJ) $(PERSON_OBJ) | build
+	$(CXX) $(CXXFLAGS) \
+	  $(MQTT_ALERT_S_SRC) $(PARKING_OBJ) $(PERSON_OBJ) \
+	  -o $@ $(LDFLAGS)
+
+$(CONTROL_EXE): $(CONTROL_SRC) $(CONTROL_OBJS) | build
+	$(CXX) $(CXXFLAGS) \
+	  $(CONTROL_SRC) $(CONTROL_OBJS) \
+	  -o $@ $(LDFLAGS)
+
+$(ALERT_DAEMON_EXE): $(ALERT_DAEMON_SRC) | build
+	$(CXX) $(CXXFLAGS) $(ALERT_DAEMON_SRC) -o $@ $(LDFLAGS)
+
+$(CONTROL_DEV_EXE): $(CONTROL_DEV_SRC) $(PERSON_OBJ) | build
+	$(CXX) $(CXXFLAGS) $(CONTROL_DEV_SRC) $(PERSON_OBJ) -o $@ $(LDFLAGS)
+
+
+$(SPEED_DAEMON_EXE): $(SPEED_DAEMON_SRC) | build
+	$(CXX) $(CXXFLAGS) $(SPEED_DAEMON_SRC) -o $@ $(LDFLAGS)
+# ─────────────────────────────────────────────────
+# assets 복사
+# ─────────────────────────────────────────────────
+
+$(ASSETS_IMG_DIR):
+	mkdir -p $(ASSETS_IMG_DIR)
+
+$(ASSETS_AUD_DIR):
+	mkdir -p $(ASSETS_AUD_DIR)
+
+control_assets: | $(ASSETS_IMG_DIR) $(ASSETS_AUD_DIR)
+	cp src/control/assets/images/* $(ASSETS_IMG_DIR)/
+	cp src/control/assets/audio/*  $(ASSETS_AUD_DIR)/
+
+# ─────────────────────────────────────────────────
 clean:
-	rm -f rtsp_server
+	rm -rf build
+
+.PHONY: all clean control_assets
