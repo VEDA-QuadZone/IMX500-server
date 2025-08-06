@@ -77,6 +77,70 @@ IMX500-server/
 
 ---
 
+## ⚙️ Raspberry Pi IMX500 초기 설정 가이드
+
+IMX500 카메라를 사용하기 위해, 라즈베리파이의 시스템과 펌웨어를 다음 순서로 준비해야 합니다.
+
+### 1. 시스템 업데이트
+
+```bash
+sudo apt update && sudo apt full-upgrade
+````
+
+### 2. IMX500 카메라 펌웨어 설치
+
+```bash
+sudo apt install imx500-all
+```
+
+### 3. 펌웨어 버전 확인
+
+```bash
+dmesg | grep 2040
+```
+
+* 출력 내용에 `fw ver.14`가 포함되어 있다면 **업데이트가 필요**합니다.
+
+### 4. 펌웨어 업데이트 (필요한 경우)
+
+1. 아래 구글 드라이브에서 `imx500_i2c_flash` 및 `main_v15.bin` 파일을 다운로드합니다:
+   [펌웨어 다운로드 링크](https://drive.google.com/drive/folders/1aUWJt8y4i1wAmRtE28j1tbEOTYlS3gzJ)
+
+2. 아래 명령어로 권한 설정 및 업데이트를 진행합니다:
+
+```bash
+chmod +x ./imx500_i2c_flash
+./imx500_i2c_flash main_v15.bin
+```
+
+### 5. config.txt 설정 추가
+
+```bash
+sudo nano /boot/firmware/config.txt
+```
+
+아래 내용을 파일 맨 아래에 추가합니다:
+
+```ini
+[cm4]
+otg_node=1
+
+[cm5]
+dtoverlay=dwc2,dr_mode=host
+
+[all]
+dtoverlay=imx500
+```
+
+### 6. 리부트 후 버전 확인
+
+```bash
+sudo reboot
+dmesg | grep 2040
+```
+
+---
+
 ## 🔧 시스템 실행 순서
 
 ### 1. TCP 이벤트 서버 빌드 및 실행 (`raspi-cctv-tcp-server`)
