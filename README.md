@@ -198,6 +198,80 @@ sudo apt install -y \
 
 ## 🔧 시스템 실행 순서
 
+### 0. 디바이스 드라이버 및 하드웨어 상태 확인
+
+IMX500-server 시스템이 정상적으로 동작하려면, 다음과 같은 장치 드라이버 및 하드웨어 연결 상태를 사전에 확인해야 합니다.
+
+#### 0.1 블루투스 연결 확인
+
+STM32와 라즈베리파이 간 데이터 송수신을 위해 HC-05 블루투스 모듈이 `/dev/rfcomm0` 등으로 인식되어 있어야 합니다.
+
+```bash
+ls /dev/rfcomm*
+```
+
+장치가 없다면 수동으로 바인딩을 수행해야 합니다:
+
+```bash
+sudo rfcomm bind /dev/rfcomm0 <STM32_BLUETOOTH_MAC_ADDRESS>
+```
+
+#### 0.2 오디오 드라이버 (mydriver) 등록
+
+MAX98357A용 경량화된 ALSA SoC 드라이버가 커널에 등록되어야 하며, `/boot/firmware/config.txt` 파일에 다음 내용을 추가합니다:
+
+```ini
+# /boot/firmware/config.txt 예시
+
+dtoverlay=mydriver
+```
+
+설정 후 시스템을 재부팅합니다:
+
+```bash
+sudo reboot
+```
+
+#### 0.3 캐릭터 디바이스 드라이버 수동 등록
+
+보행자 경고 시스템 동작을 위해, 다음 세 가지 커널 모듈을 수동으로 삽입해야 합니다:
+
+```bash
+cd ~/myproject/cpp/src/control/driver
+sudo insmod alert_trigger.ko
+sudo insmod lcd_notify.ko
+sudo insmod wav_notify.ko
+```
+
+##### (1) Major 번호 확인
+
+`/proc/devices`를 확인하여 각 디바이스 드라이버의 major 번호를 확인합니다:
+
+```bash
+cat /proc/devices
+```
+
+예시 출력:
+
+```
+234 wav_notify
+235 lcd_notify
+236 alert_trigger
+```
+
+##### (2) /dev/ 장치 파일 수동 생성
+
+확인된 major 번호를 기반으로 다음 명령어를 통해 캐릭터 디바이스 노드를 생성합니다:
+
+```bash
+sudo mknod /dev/alert_trigger c 236 0
+sudo mknod /dev/lcd_notify c 235 0
+sudo mknod /dev/wav_notify c 234 0
+sudo chmod 666 /dev/alert_trigger /dev/lcd_notify /dev/wav_notify
+```
+
+> 참고: Major 번호는 시스템마다 다를 수 있으니 `/proc/devices` 출력값을 반드시 확인 후 반영하세요.
+
 ### 1. TCP 이벤트 서버 빌드 및 실행 (`raspi-cctv-tcp-server`)
 → 차량 속도 및 이벤트 수신 서버 구동
 
