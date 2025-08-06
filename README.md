@@ -138,6 +138,46 @@ dtoverlay=imx500
 sudo reboot
 dmesg | grep 2040
 ```
+## 🛠️ 개발 환경 구축 (Raspberry Pi OS 기준)
+이 프로젝트를 실행하기 위해 아래 패키지를 먼저 설치해 주세요:
+
+```bash
+sudo apt update
+sudo apt install -y \
+    build-essential \
+    cmake \
+    pkg-config \
+    libssl-dev \
+    libmosquitto-dev \
+    mosquitto \
+    libzmq3-dev \
+    libczmq-dev \
+    libnlohmann-json-dev \
+    libopencv-dev \
+    ffmpeg \
+    v4l-utils \
+    libavcodec-dev \
+    libavformat-dev \
+    libavutil-dev \
+    libswscale-dev \
+    libcurl4-openssl-dev \
+    liblgpio-dev
+```
+## 📦 패키지 설명
+| 패키지명                                     | 설명                               |
+| ---------------------------------------- | -------------------------------- |
+| `build-essential`, `cmake`, `pkg-config` | C++ 개발 도구                        |
+| `libssl-dev`                             | OpenSSL 기반 TLS 통신                |
+| `libmosquitto-dev`, `mosquitto`          | MQTT 메시징                         |
+| `libzmq3-dev`, `libczmq-dev`             | ZeroMQ 메시징                       |
+| `libnlohmann-json-dev`                   | JSON 파싱                          |
+| `libopencv-dev`                          | OpenCV 영상처리 (SHM 프레임 디코딩용)       |
+| `ffmpeg`                                 | 실시간 인코딩 및 RTSP 송출 (popen 방식)     |
+| `v4l-utils`                              | H.264 하드웨어 인코딩 (`h264_v4l2m2m`)용 |
+| `libav*` 시리즈                             | FFmpeg 연동을 위한 라이브러리 모듈           |
+| `libcurl4-openssl-dev`                   | HTTP API 호출용 libcurl             |
+| `liblgpio-dev`                           | Raspberry Pi GPIO 제어용 C 라이브러리    |
+
 
 ---
 
@@ -150,8 +190,8 @@ dmesg | grep 2040
 cd ~/myproject/raspi-cctv-tcp-server
 mkdir build && cd build
 cmake ..
-make
-./raspi-cctv-server
+make server
+./server
 ````
 
 ---
@@ -160,31 +200,18 @@ make
 → 카메라 기반 AI 감지 및 이벤트 송출 처리
 
 ```bash
-cd ~/myproject/camera
+cd ~/IMX500-server/camera
 ./start_camera.sh    # 카메라 및 공유메모리 연동 시작
 
-cd ~/myproject/cpp/build
+cd ~/IMX500-server/cpp/build
 ./run_all.sh         # 번호판 감지, OCR, 이벤트 감지 등 전체 모듈 실행
 ```
 
 ---
 
 ### 3. QuadQT 실행 (MinGW 환경)
-QuadQT 프로젝트를 MinGW 환경에서 실행하려면 다음 절차를 따릅니다:
-
-```bash
-
-1. 프로젝트 디렉토리로 이동
-cd QuadQT
-
-2. Makefile 생성
-qmake QuadQT.pro
-
-3. 빌드 수행
-mingw32-make
-```
-빌드가 완료되면 실행 파일 QuadQT.exe가 생성됩니다.
-
+(https://github.com/VEDA-QuadZone/QuadQT/releases/tag/v1.0.0)
+위 링크 접속 후 배포파일 다운로드 후 실행파일을 실행하세요
 ---
 
 ## 🧠 내부 처리 구조 (IMX500-server)
